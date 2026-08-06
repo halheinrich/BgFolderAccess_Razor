@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Framework, nullable, implicit usings, and warnings-as-errors are repo-wide
+       policy — see ..\Directory.Build.props. Only per-project decisions live here. -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <!-- Opt out of the repo-wide GenerateDocumentationFile: a test assembly ships
+         no public API, so a doc file would only invite CS1591 noise on xUnit
+         fixtures. Warnings-as-errors still applies (inherited from props). -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- bunit supplies the scripted JS module interop (BunitContext.JSInterop
+         .SetupModule) the JsFolderAccess seam tests drive — no components are
+         rendered here. -->
+    <PackageReference Include="bunit" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\BgFolderAccess_Razor\BgFolderAccess_Razor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

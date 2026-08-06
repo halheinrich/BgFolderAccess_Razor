@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <!-- Framework, nullable, implicit usings, warnings-as-errors, and doc-file
+       generation are repo-wide policy — see ..\Directory.Build.props. Only
+       per-project decisions live here: the Razor SDK (project attribute above)
+       and the browser SupportedPlatform.
+
+       The Razor SDK is used for its static-web-asset pipeline alone — this
+       library exposes no .razor components. It exists so folderAccess.js ships
+       as a static web asset that consumers import from
+       ./_content/BgFolderAccess_Razor/js/folderAccess.js. -->
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Test-only. JsFolderAccess's wire DTOs are internal (not private) solely
+         so the bUnit module tests can construct scripted results; nothing
+         outside this repo touches them. Grants nothing to consumers. -->
+    <InternalsVisibleTo Include="BgFolderAccess_Razor.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" />
+  </ItemGroup>
+
+</Project>

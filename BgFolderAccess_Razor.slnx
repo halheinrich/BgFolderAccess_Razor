@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BgFolderAccess_Razor.Tests/BgFolderAccess_Razor.Tests.csproj" />
+  <Project Path="BgFolderAccess_Razor/BgFolderAccess_Razor.csproj" />
+</Solution>

@@ -15,9 +15,10 @@ namespace BgFolderAccess_Razor;
 /// the File System Access mechanism requests first — the browser reports both as
 /// <c>AbortError</c>, so nothing downstream can tell them apart. Callers must
 /// treat it as "no folder was picked", never as "the user changed their mind".
-/// (Declining the <i>second</i>, readwrite prompt is not cancellation: it keeps
-/// the readable handle and lands on
-/// <see cref="FolderWriteCapability.PermissionDenied"/>.)
+/// (Nothing that happens to the <i>second</i>, readwrite request is
+/// cancellation — neither declining it nor the browser refusing to ask it. Both
+/// keep the readable handle and land on
+/// <see cref="FolderWriteCapability.PermissionDenied"/>; see that member.)
 /// </para>
 /// </summary>
 /// <param name="Cancelled">True when the pick ended holding no folder — see the type remarks.</param>

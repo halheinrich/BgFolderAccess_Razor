@@ -96,9 +96,28 @@ export function supportsDirectoryPicker() {
 // Declining the readwrite request is NOT an abort: requestPermission resolves
 // 'denied', the picked handle stays READABLE, and the pick returns
 // writable:false — the PermissionDenied rung, where the file list still loads
-// and the host runs read-only. Same if that request ever auto-denies (some
-// Chromium versions treat the transient user activation as consumed by the
-// picker): the degrade is graceful either way.
+// and the host runs read-only.
+//
+// THE BROWSER REFUSING TO ASK LANDS ON THAT SAME RUNG, and getting there takes
+// the catch below. requestPermission REQUIRES transient user activation and
+// REJECTS when there is none — File System Access spec: "If global does not
+// have transient activation, then throw a SecurityError DOMException"; the
+// message Chromium puts on it is "User activation is required to request
+// permissions." showDirectoryPicker performs the activation notification steps
+// as it resolves, which is what leaves desktop Chrome with live activation on
+// the line below. On Chrome for Android it is not live by the time this runs,
+// so the request is refused on EVERY pick — deterministically, a second fresh
+// gesture included (halheinrich/backgammon#109, Galaxy Tab S10 FE).
+//
+// This was previously described here as an "auto-deny" that degraded on its
+// own. It does not auto-deny, it THROWS, and the throw was uncaught: it escaped
+// beginPick as a JSException and destroyed the entire pick — including the read
+// grant the user had ALREADY given, which is strictly worse than any degrade.
+// Catching it is what makes the documented graceful degrade actually exist. A
+// refusal to ask and a user's own "no" are deliberately not distinguished: both
+// mean "no write grant", the picked folder stays readable in both, and no
+// caller has a reason to act differently. Anything else the request throws is a
+// real browser failure and still fails the pick loudly.
 //
 // DON'T collapse this into one prompt. showDirectoryPicker({ mode: 'readwrite' })
 // looks like a free UX win — one prompt instead of two — and was tried and
@@ -123,7 +142,16 @@ export async function beginPick() {
         throw e;
     }
 
-    const writable = await handle.requestPermission({ mode: 'readwrite' }) === 'granted';
+    let writable = false;
+    try {
+        writable = await handle.requestPermission({ mode: 'readwrite' }) === 'granted';
+    } catch (e) {
+        // SecurityError is the refuse-to-ask above (no transient activation, or
+        // a cross-origin frame) — read-only is the honest outcome for both.
+        if (!(e instanceof DOMException && e.name === 'SecurityError')) {
+            throw e;
+        }
+    }
 
     pickedHandle = handle;
     pickedFiles = new Map();  // filled by enumeratePicked

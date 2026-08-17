@@ -24,9 +24,22 @@ public enum FolderWriteCapability
     BrowserUnsupported,
 
     /// <summary>
-    /// The browser supports the File System Access API but the user declined
-    /// write permission — the picked files remain readable, nothing is
-    /// written.
+    /// The browser supports the File System Access API but no write grant came
+    /// back — the picked files remain readable, nothing is written.
+    ///
+    /// <para>
+    /// <b>It does not say why, and callers must not claim one.</b> Two causes
+    /// land here and are deliberately not distinguished: the user answered no
+    /// to the write request, <i>or</i> the browser refused to ask at all
+    /// (<c>requestPermission</c> requires transient user activation and throws
+    /// a <c>SecurityError</c> without it — the standing outcome on Chrome for
+    /// Android, where the picker leaves no live activation behind; see
+    /// <c>folderAccess.js</c>'s <c>beginPick</c> and
+    /// <c>halheinrich/backgammon#109</c>). On that second path no write prompt
+    /// is ever shown, so wording that says the user declined attributes a
+    /// decision they never made. Both causes mean the same thing to a host —
+    /// no write grant, folder still readable — which is why they share a rung.
+    /// </para>
     /// </summary>
     PermissionDenied,
 }

@@ -33,10 +33,35 @@ function matchingExtensionOf(name, limits) {
     return Object.keys(limits).find(ext => lower.endsWith(ext)) ?? null;
 }
 
-// Per-extension admission against the caps table. admit() takes the first
-// limits[ext] files of each kind in enumeration order and tallies the rest;
-// left() reports only the kinds actually truncated, in the table's own order so
-// a multi-line notice is deterministic.
+// Per-extension admission against the caps table, in two phases: collect()
+// takes every matching file the walk finds, then draw() chooses each kind's
+// admitted subset and tallies what it left behind. draw() reports only the
+// kinds actually truncated, in the table's own order so a multi-line notice is
+// deterministic.
+//
+// THE SUBSET IS DRAWN UNIFORMLY AT RANDOM, not taken from the front. Admitting
+// the first limits[ext] files in enumeration order — what this did until
+// halheinrich/backgammon#106 — made a corpus-scale folder's excess PERMANENTLY
+// invisible: enumeration order is browser-supplied and stable, so every re-pick
+// of the same folder admitted the same prefix and the tail was unreachable by
+// any gesture the user could make. Drawing at random makes repeated picks of
+// one folder cover the whole corpus over time, which is the honest price of a
+// cost ceiling. This is the module's only behavior, deliberately not a host
+// knob: the caps table is host-owned NUMBERS, while how a cap chooses its
+// survivors is the library's enforcement — and no host wants the rule whose
+// excess is unreachable.
+//
+// COLLECT-THEN-DRAW, not reservoir sampling. A one-pass reservoir would hold
+// only limits[ext] entries, but there is nothing to buy with that here: the
+// FS-Access walk visits every entry either way and a held entry is one handle
+// reference (names are free — see enumeratePicked), and collectFallbackFiles is
+// handed the whole FileList up front regardless. Two obvious phases beat one
+// clever pass.
+//
+// ENCOUNTER ORDER SURVIVES THE DRAW. Admitted files come back in the order the
+// caller met them — across kinds, not grouped by kind — so a pick under every
+// cap is indistinguishable from one that never sampled, and an over-limit pick
+// still reads in folder order rather than in draw order.
 //
 // TRUNCATE, DON'T FAIL — and enforce it HERE. An over-limit folder used to lose
 // the whole pick to a throw on the C# side (JsFolderAccess counted the
@@ -49,26 +74,53 @@ function matchingExtensionOf(name, limits) {
 //
 // Each kind is capped INDEPENDENTLY, because file count is only a cost proxy
 // within one kind (the host's table encodes its own per-kind cost model). A
-// mixed folder can therefore admit its full quota of every kind.
-function createCountLimiter(limits) {
-    const taken = new Map();
-    const skipped = new Map();
+// mixed folder can therefore admit its full quota of every kind, and one kind
+// being sampled down leaves the others untouched.
+function createCountSampler(limits) {
+    const matching = [];          // every matching item, in encounter order
+    const positions = new Map();  // extension -> that kind's indices into `matching`
     return {
-        admit(extension) {
-            const soFar = taken.get(extension) ?? 0;
-            if (soFar < limits[extension]) {
-                taken.set(extension, soFar + 1);
-                return true;
+        collect(extension, item) {
+            if (!positions.has(extension)) {
+                positions.set(extension, []);
             }
-            skipped.set(extension, (skipped.get(extension) ?? 0) + 1);
-            return false;
+            positions.get(extension).push(matching.length);
+            matching.push(item);
         },
-        left() {
-            return Object.keys(limits)
-                .filter(ext => skipped.has(ext))
-                .map(ext => ({ extension: ext, omittedCount: skipped.get(ext) }));
+        draw() {
+            const drawn = new Set();
+            const omitted = [];
+            for (const extension of Object.keys(limits)) {
+                const found = positions.get(extension);
+                if (found === undefined) continue;
+                const cap = limits[extension];
+                if (found.length > cap) {
+                    omitted.push({ extension, omittedCount: found.length - cap });
+                }
+                for (const index of sample(found, cap)) drawn.add(index);
+            }
+            return { admitted: matching.filter((_, i) => drawn.has(i)), omitted };
         },
     };
+}
+
+// Choose `count` of `indices` uniformly at random — all of them, untouched,
+// when there are no more than `count`, which is what leaves an under-limit kind
+// byte-identical to a pick that never sampled. Over the cap it is a partial
+// Fisher-Yates shuffle over a copy: each of the first `count` slots draws from
+// whatever is left, so every subset of that size is equally likely. The
+// returned order is the draw's, not the folder's — encounter order is
+// re-imposed by index in draw(), which is the only caller.
+function sample(indices, count) {
+    if (indices.length <= count) {
+        return indices;
+    }
+    const pool = [...indices];
+    for (let i = 0; i < count; i++) {
+        const j = i + Math.floor(Math.random() * (pool.length - i));
+        [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    return pool.slice(0, count);
 }
 
 export function supportsDirectoryPicker() {
@@ -166,29 +218,39 @@ export async function beginPick() {
 // painted by the time this runs.
 //
 // `limits` is FolderPickLimits.MaxFileCounts (see matchingExtensionOf). The
-// admission check runs BEFORE getFile(), so a folder holding ten thousand files
-// pays one stat per file it actually takes, not per file it walks past.
+// walk classifies and collects by NAME ALONE, which costs nothing, and
+// getFile() runs afterwards over the DRAWN files only — so a folder holding ten
+// thousand files still pays one stat per file the pick actually takes, not per
+// file it walks past. That property is why the draw sits BETWEEN the two loops
+// instead of inside the first one: a per-entry decision made on the way past
+// cannot be a uniform sample, because it does not yet know how many candidates
+// are still coming.
 export async function enumeratePicked(limits) {
     if (pickedHandle === null) {
         throw new Error('No picked folder to enumerate.');
     }
 
-    const limiter = createCountLimiter(limits);
-    const files = [];
-    const map = new Map();
+    const sampler = createCountSampler(limits);
     for await (const entry of pickedHandle.values()) {
         if (entry.kind !== 'file') continue;
         const extension = matchingExtensionOf(entry.name, limits);
-        if (extension === null || !limiter.admit(extension)) continue;
+        if (extension === null) continue;
+        sampler.collect(extension, entry);
+    }
+
+    const { admitted, omitted } = sampler.draw();
+    const files = [];
+    const map = new Map();
+    for (const entry of admitted) {
         const file = await entry.getFile();
         map.set(entry.name, entry);
         files.push({ name: entry.name, size: file.size });
     }
 
-    // Only the admitted files land in the picked slot: readFileData serves the
+    // Only the drawn files land in the picked slot: readFileData serves the
     // buffering pass, and what was left behind is not readable by this pick.
     pickedFiles = map;
-    return { files, omitted: limiter.left() };
+    return { files, omitted };
 }
 
 // Fallback gesture: open the hidden webkitdirectory input's native picker.
@@ -202,28 +264,33 @@ export function clickElement(element) {
 // only top-level matching files — webkitRelativePath is "folder/file.ext" for
 // direct children (exactly one separator). Blazor's InputFile can't see
 // webkitRelativePath, which is why this module reads the FileList itself.
+//
+// Same caps, same draw as the FS-Access path (createCountSampler) — the
+// sampling rule is one rule, so it has one implementation. Nothing is being
+// deferred for cost here: the whole FileList is already in hand, so the two
+// phases are pure bookkeeping on this mechanism.
 export function collectFallbackFiles(inputElement, limits) {
     const all = Array.from(inputElement.files ?? []);
-    const limiter = createCountLimiter(limits);
-    const topLevel = [];
+    const sampler = createCountSampler(limits);
     for (const f of all) {
         if ((f.webkitRelativePath.match(/\//g) ?? []).length !== 1) continue;
         const extension = matchingExtensionOf(f.name, limits);
-        if (extension === null || !limiter.admit(extension)) continue;
-        topLevel.push(f);
+        if (extension === null) continue;
+        sampler.collect(extension, f);
     }
 
+    const { admitted, omitted } = sampler.draw();
     const directoryName = all.length > 0 ? all[0].webkitRelativePath.split('/')[0] : '';
 
     pickedHandle = null;  // no writable handle on this mechanism
-    pickedFiles = new Map(topLevel.map(f => [f.name, f]));
+    pickedFiles = new Map(admitted.map(f => [f.name, f]));
     // Allow the same folder to be re-picked later: a change event only fires
     // when the selection differs, so reset the input now that it's collected.
     inputElement.value = '';
     return {
         directoryName,
-        files: topLevel.map(f => ({ name: f.name, size: f.size })),
-        omitted: limiter.left(),
+        files: admitted.map(f => ({ name: f.name, size: f.size })),
+        omitted,
     };
 }
 

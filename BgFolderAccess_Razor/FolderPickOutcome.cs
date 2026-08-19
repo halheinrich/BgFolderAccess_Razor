@@ -20,6 +20,16 @@ namespace BgFolderAccess_Razor;
 /// keep the readable handle and land on
 /// <see cref="FolderWriteCapability.PermissionDenied"/>; see that member.)
 /// </para>
+///
+/// <para>
+/// <b>An over-limit folder's <see cref="Files"/> is a random sample.</b> Each
+/// count cap admits a uniformly random subset of its kind, so re-picking one
+/// over-limit folder can hand back a different set of files — which is the
+/// point: repeated picks reach a corpus larger than the caps admit, where
+/// taking a fixed prefix would put the same excess permanently out of reach.
+/// Files still arrive in folder-enumeration order, and a folder that fit every
+/// cap is entirely unaffected. See <see cref="PickTruncation"/>.
+/// </para>
 /// </summary>
 /// <param name="Cancelled">True when the pick ended holding no folder — see the type remarks.</param>
 /// <param name="DirectoryName">The picked folder's leaf name (empty when cancelled).</param>

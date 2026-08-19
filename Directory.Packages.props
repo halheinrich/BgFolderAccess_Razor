@@ -7,6 +7,11 @@
   <ItemGroup>
     <PackageVersion Include="bunit" Version="2.8.6" />
     <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+    <!-- Jint runs the shipped folderAccess.js inside the xUnit suite (see
+         FolderAccessModuleHost). The count-cap draw is the module's one piece of
+         real algorithm, and without an in-process JS engine this repo could not
+         execute it at all — only the consuming host's e2e could. -->
+    <PackageVersion Include="Jint" Version="4.16.0" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.Web" Version="10.0.10" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />

@@ -3,9 +3,20 @@ namespace BgFolderAccess_Razor;
 /// <summary>
 /// One matching-file kind the pick had to truncate: more files of
 /// <paramref name="Extension"/> were in the folder than the host's
-/// <see cref="FolderPickLimits"/> admits, so the first
+/// <see cref="FolderPickLimits"/> admits, so a randomly drawn
 /// <paramref name="MaxFileCount"/> of them were taken and
 /// <paramref name="OmittedCount"/> were left unread.
+///
+/// <para>
+/// <b>Which files survive is drawn uniformly at random, not taken in folder
+/// order</b> (<c>folderAccess.js</c> enforces the count caps). Enumeration
+/// order is browser-supplied and stable, so admitting a prefix would put a
+/// corpus-scale folder's excess permanently out of reach — the same files
+/// would be lost to every re-pick. A random draw lets repeated picks of one
+/// folder cover the whole corpus over time. This record is unaffected by that
+/// choice: it reports <i>how much</i> was left behind, never <i>which</i>
+/// files — but host copy that says "the first N" is no longer true.
+/// </para>
 ///
 /// <para>
 /// Reported per kind, and <b>only for kinds actually truncated</b> — each

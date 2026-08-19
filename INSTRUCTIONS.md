@@ -7,7 +7,8 @@
 ## Stack
 
 C# / .NET 10 / Razor class library (`Microsoft.NET.Sdk.Razor`) / xUnit + bUnit
-(JS-module interop scripting only — no components render).
+(JS-module interop scripting only — no components render) + Jint (runs the
+shipped `folderAccess.js` in-process; see Test posture).
 Visual Studio 2026 on Windows.
 
 ## Solution
@@ -45,6 +46,9 @@ BgFolderAccess_Razor.Tests/
   FolderPickLimitsTests.cs   — ctor validation matrix, order, derived figures
   FolderPickOutcomeTests.cs  — cancelled-singleton + value-type contracts
   JsFolderAccessTests.cs     — the interop seam over bUnit's scripted module
+  FolderAccessModuleHost.cs  — runs the shipped folderAccess.js in Jint
+  FolderAccessSamplingTests.cs — the count-cap draw, as the module computes it
+  js/moduleHarness.js        — test-side fakes the module is driven through
 ```
 
 ## Architecture
@@ -102,6 +106,14 @@ library ships **no numbers** — each host's values encode its own cost model
 - **Count caps truncate, never fail**, per extension independently, in the JS
   module (the only place an extension is known before transfer). What was left
   behind rides back as `FolderPickOutcome.Truncations`.
+- **An over-limit kind's survivors are drawn uniformly at random**, not taken
+  in enumeration order (umbrella issue #106). That order is browser-supplied
+  and stable, so a prefix rule put a corpus-scale folder's excess permanently
+  out of reach — the same files lost to every re-pick. The draw is the module's
+  only behavior, deliberately **not** a `FolderPickLimits` knob: the table is
+  host-owned *numbers*, and how a cap picks its survivors is library
+  enforcement. Files still come back in folder order, and a pick under every
+  cap is unchanged from a pick that never sampled.
 - The **byte cap fails the whole pick** (`InvalidOperationException` from
   `JsFolderAccess`, checked against enumerated metadata before any transfer)
   and is re-asserted as `OpenReadStreamAsync(maxAllowedSize:)` on the actual
@@ -125,11 +137,22 @@ and degrade on. The one deliberate throw is the byte-cap
 
 The xUnit suite pins the C# side: `FolderPickLimits` validation, the outcome
 value types, and `JsFolderAccess`'s mapping seam over bUnit's scripted module
-interop (`SetupModule` — no real JS runs). **The JS module's real-wire proof —
-actual pickers, permission prompts, enumeration, the byte path — is
-browser-only and is NOT covered in this repo**; it arrives with the consuming
-host's e2e suite (BgQuiz's migration leg carries it). Do not read this repo's
-green tests as coverage of the browser behavior.
+interop (`SetupModule` — no real JS runs there).
+
+It also **runs the shipped `folderAccess.js` itself**, in Jint, via
+`FolderAccessModuleHost` — the real file, staged beside the test assembly by
+the csproj so a rename breaks the build rather than a test. That covers the
+module's *logic*: classification, the per-kind random draw and its left-behind
+report, result ordering, and how many times a pick calls `getFile()`. It exists
+because the draw is the library's one real algorithm and it is written in
+JavaScript; without an engine here it would first execute one repository away,
+in a consumer's browser suite.
+
+**Jint is an engine, not a browser.** The module's real-wire proof — actual
+pickers, permission prompts, `DOMException` mapping, `File`/`ArrayBuffer`
+transfer — is still browser-only and is NOT covered in this repo; it arrives
+with the consuming host's e2e suite (BgQuiz's migration leg carries it). Do not
+read this repo's green tests as coverage of the browser behavior.
 
 ## Public API
 
@@ -276,6 +299,23 @@ it re-opens a closed trap.
 - **Dispose tolerates `JSDisconnectedException`** (tab close / reload tears
   the runtime down before the module reference releases). Keep the catch;
   removing it turns every tab close into an unhandled exception.
+- **The draw sits BETWEEN the walk and the stats — don't fold it back in.**
+  `enumeratePicked` classifies and collects by name (free), draws each kind's
+  survivors, and only then calls `getFile()`, so a ten-thousand-file folder
+  still pays one stat per file it *takes*. A per-entry admission decision made
+  on the way past cannot be a uniform draw — it does not yet know how many
+  candidates are still coming — so re-fusing the two loops silently restores
+  the first-N bug #106 closed. `Enumeration_StatsOnlyTheFilesItTakes` is what
+  guards the cost half.
+- **Only one sampling test tells random from first-N.** Every other invariant
+  in `FolderAccessSamplingTests` (`|admitted| = min(cap, matching)`, subset,
+  per-kind independence, encounter order, report order) holds under *both*
+  rules — verified by running the suite against the pre-#106 module, where
+  exactly `RepeatedPicks_ReachEveryFileOfAnOverLimitKind` fails. Don't delete
+  it as "the flaky-looking one": its stated failure odds are ~1e-10, and
+  without it the change is untested. Equally, don't replace it with a "two
+  picks differ" assertion — that one really is flaky (1-in-501 on BgQuiz's
+  `.xg` cap).
 - **bUnit test trap: scripted setups for calls that carry the caps table need
   a matcher** (`Setup<T>("enumeratePicked", _ => true)`) — an argument-less
   exact setup never matches, and the resulting "no setup" failure looks like

@@ -13,9 +13,12 @@
   <ItemGroup>
     <!-- bunit supplies the scripted JS module interop (BunitContext.JSInterop
          .SetupModule) the JsFolderAccess seam tests drive — no components are
-         rendered here. -->
+         rendered here. Jint is the other half of the story: it *executes* the
+         RCL's real folderAccess.js, so the count-cap draw is covered here rather
+         than only in a consuming host's browser suite. -->
     <PackageReference Include="bunit" />
     <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Jint" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
@@ -23,6 +26,17 @@
 
   <ItemGroup>
     <ProjectReference Include="..\BgFolderAccess_Razor\BgFolderAccess_Razor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The RCL's shipped module, linked (not copied into source control) and
+         staged beside the test assembly: the Jint suite must run the file the
+         library actually publishes, never a transcription of it. Moving or
+         renaming it breaks this build rather than a test at runtime.
+         js\moduleHarness.js is the test-side fake wiring that imports it. -->
+    <None Include="..\BgFolderAccess_Razor\wwwroot\js\folderAccess.js"
+          Link="js\folderAccess.js" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="js\moduleHarness.js" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

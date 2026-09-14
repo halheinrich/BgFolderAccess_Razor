@@ -311,12 +311,12 @@ it re-opens a closed trap.
 - **Only one sampling test tells random from first-N.** Every other invariant
   in `FolderAccessSamplingTests` (`|admitted| = min(cap, matching)`, subset,
   per-kind independence, encounter order, report order) holds under *both*
-  rules — verified by running the suite against the pre-#106 module, where
-  exactly `RepeatedPicks_ReachEveryFileOfAnOverLimitKind` fails. Don't delete
-  it as "the flaky-looking one": its stated failure odds are ~1e-10, and
-  without it the change is untested. Equally, don't replace it with a "two
-  picks differ" assertion — that one really is flaky (1-in-501 on BgQuiz's
-  `.xg` cap).
+  rules — verified by running the suite against the module from before
+  halheinrich/backgammon#106, where exactly
+  `RepeatedPicks_ReachEveryFileOfAnOverLimitKind` fails. Don't delete it as
+  "the flaky-looking one": its stated failure odds are ~1e-10, and without it
+  the change is untested. Equally, don't replace it with a "two picks differ"
+  assertion — that one really is flaky (1-in-501 on BgQuiz's `.xg` cap).
 - **bUnit test trap: scripted setups for calls that carry the caps table need
   a matcher** (`Setup<T>("enumeratePicked", _ => true)`) — an argument-less
   exact setup never matches, and the resulting "no setup" failure looks like

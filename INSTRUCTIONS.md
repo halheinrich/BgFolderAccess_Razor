@@ -56,12 +56,13 @@ BgFolderAccess_Razor.Tests/
 ### What this library is
 
 BgQuiz_Blazor's File System Access folder machinery, rehomed (umbrella arc
-issue #79) so a second consumer (Extract Web, deferred issue #80) can adopt it
-instead of copying it. One concern: let a Blazor WebAssembly host pick a local
-folder, buffer its top-level matching files, and read/write named text files
-in that folder — across both browser mechanisms, with graceful degrades. No
-`.razor` components; the Razor SDK exists solely so `folderAccess.js` ships as
-a static web asset (`./_content/BgFolderAccess_Razor/js/folderAccess.js`).
+issue halheinrich/backgammon#79) so a second consumer (Extract Web, deferred
+issue halheinrich/backgammon#80) can adopt it instead of copying it. One
+concern: let a Blazor WebAssembly host pick a local folder, buffer its
+top-level matching files, and read/write named text files in that folder —
+across both browser mechanisms, with graceful degrades. No `.razor`
+components; the Razor SDK exists solely so `folderAccess.js` ships as a static
+web asset (`./_content/BgFolderAccess_Razor/js/folderAccess.js`).
 
 ### Two pick mechanisms, one outcome shape
 
@@ -107,13 +108,13 @@ library ships **no numbers** — each host's values encode its own cost model
   module (the only place an extension is known before transfer). What was left
   behind rides back as `FolderPickOutcome.Truncations`.
 - **An over-limit kind's survivors are drawn uniformly at random**, not taken
-  in enumeration order (umbrella issue #106). That order is browser-supplied
-  and stable, so a prefix rule put a corpus-scale folder's excess permanently
-  out of reach — the same files lost to every re-pick. The draw is the module's
-  only behavior, deliberately **not** a `FolderPickLimits` knob: the table is
-  host-owned *numbers*, and how a cap picks its survivors is library
-  enforcement. Files still come back in folder order, and a pick under every
-  cap is unchanged from a pick that never sampled.
+  in enumeration order (umbrella issue halheinrich/backgammon#106). That order
+  is browser-supplied and stable, so a prefix rule put a corpus-scale folder's
+  excess permanently out of reach — the same files lost to every re-pick. The
+  draw is the module's only behavior, deliberately **not** a `FolderPickLimits`
+  knob: the table is host-owned *numbers*, and how a cap picks its survivors is
+  library enforcement. Files still come back in folder order, and a pick under
+  every cap is unchanged from a pick that never sampled.
 - The **byte cap fails the whole pick** (`InvalidOperationException` from
   `JsFolderAccess`, checked against enumerated metadata before any transfer)
   and is re-asserted as `OpenReadStreamAsync(maxAllowedSize:)` on the actual
@@ -305,8 +306,8 @@ it re-opens a closed trap.
   still pays one stat per file it *takes*. A per-entry admission decision made
   on the way past cannot be a uniform draw — it does not yet know how many
   candidates are still coming — so re-fusing the two loops silently restores
-  the first-N bug #106 closed. `Enumeration_StatsOnlyTheFilesItTakes` is what
-  guards the cost half.
+  the first-N bug halheinrich/backgammon#106 closed.
+  `Enumeration_StatsOnlyTheFilesItTakes` is what guards the cost half.
 - **Only one sampling test tells random from first-N.** Every other invariant
   in `FolderAccessSamplingTests` (`|admitted| = min(cap, matching)`, subset,
   per-kind independence, encounter order, report order) holds under *both*
@@ -324,5 +325,5 @@ it re-opens a closed trap.
 ## Subproject-internal next steps
 
 - None. (The consuming legs — BgQuiz's migration onto this library and the
-  Extract Web adoption, #80 — are umbrella-tracked arc work, not internal
-  items.)
+  Extract Web adoption, halheinrich/backgammon#80 — are umbrella-tracked
+  arc work, not internal items.)

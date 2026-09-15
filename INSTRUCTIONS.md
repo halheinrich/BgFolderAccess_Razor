@@ -25,31 +25,33 @@ Standalone. (Deliberately no reference either direction with `XgFilter_Razor` �
 hosts that use both bridge them with one-line adapter glue, e.g. an
 `IFilterDocumentStorage` adapter over `IFolderAccess`'s picked-slot file I/O.)
 
-## Directory tree
+## Layout
 
-```
-BgFolderAccess_Razor.slnx
-Directory.Build.props
-Directory.Packages.props
-BgFolderAccess_Razor/
-  BgFolderAccess_Razor.csproj
-  FolderWriteCapability.cs   — pick-time write-capability taxonomy
-  FolderPickLimits.cs        — host-supplied caps configuration (validated)
-  PickedFile.cs              — one buffered matching file (name + bytes)
-  PickTruncation.cs          — one kind's left-behind report
-  FolderPickOutcome.cs       — the result of one pick gesture
-  IFolderAccess.cs           — the host-facing interface
-  JsFolderAccess.cs          — the JS-backed implementation (the only interop type)
-  wwwroot/js/folderAccess.js — the ES module (static web asset)
-BgFolderAccess_Razor.Tests/
-  BgFolderAccess_Razor.Tests.csproj
-  FolderPickLimitsTests.cs   — ctor validation matrix, order, derived figures
-  FolderPickOutcomeTests.cs  — cancelled-singleton + value-type contracts
-  JsFolderAccessTests.cs     — the interop seam over bUnit's scripted module
-  FolderAccessModuleHost.cs  — runs the shipped folderAccess.js in Jint
-  FolderAccessSamplingTests.cs — the count-cap draw, as the module computes it
-  js/moduleHarness.js        — test-side fakes the module is driven through
-```
+Two projects under `BgFolderAccess_Razor.slnx`, governed by repo-root
+`Directory.Build.props` (TFM, `TreatWarningsAsErrors`, XML doc generation)
+and `Directory.Packages.props` (Central Package Management).
+
+**`BgFolderAccess_Razor/`** — the Razor class library. It renders no
+components. Three areas:
+
+- **The host-facing seam** — `IFolderAccess`, the host's one gateway to the
+  browser's folder facilities, and `JsFolderAccess`, its implementation and
+  the library's only interop type.
+- **The pick's values** — `FolderPickOutcome`, the result of one pick
+  gesture; `PickedFile`, one buffered matching file; `PickTruncation`, one
+  file kind's left-behind report; `FolderWriteCapability`, the pick-time
+  write-capability taxonomy; `FolderPickLimits`, the host-supplied caps
+  configuration, validated at construction.
+- **The JS module** — `wwwroot/js/folderAccess.js`, the ES module shipped as
+  a static web asset: both pick mechanisms and the two-slot state, with
+  directory handles that never cross interop.
+
+**`BgFolderAccess_Razor.Tests/`** — xUnit, in the two halves § Test posture
+describes. The C# half: the value types' contracts, the caps validation,
+and `JsFolderAccess`'s mapping over bUnit's scripted module. The JS half:
+`FolderAccessModuleHost` runs the shipped `folderAccess.js` in Jint through
+the test-side fakes in `js/moduleHarness.js`, and the sampling tests pin
+the count-cap draw as the module itself computes it.
 
 ## Architecture
 

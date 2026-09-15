@@ -2,8 +2,8 @@
 
   <!-- Framework, nullable, implicit usings, warnings-as-errors, and doc-file
        generation are repo-wide policy — see ..\Directory.Build.props. Only
-       per-project decisions live here: the Razor SDK (project attribute above)
-       and the browser SupportedPlatform.
+       per-project decisions live here: the Razor SDK (project attribute above),
+       the browser SupportedPlatform, and the trim posture below.
 
        The Razor SDK is used for its static-web-asset pipeline alone — this
        library exposes no .razor components. It exists so folderAccess.js ships
@@ -13,6 +13,20 @@
   <ItemGroup>
     <SupportedPlatform Include="browser" />
   </ItemGroup>
+
+  <!-- BgQuiz's WebAssembly client ships this assembly, and its publish runs
+       trim analysis with warnings as errors (halheinrich/backgammon#197). The
+       library declares itself trim-compatible and runs the analyzer in its own
+       build, so a trim-unsafe construct added here — a reflection-bound
+       serialization of the interop wire DTOs is the likely one — fails this
+       repo's build (TreatWarningsAsErrors) in the change that introduced it,
+       not a leg later in BgQuiz's publish. Per-project deliberately: the test
+       project is not a shipped surface. IsTrimmable is pinned by
+       BgFolderAccessRazorTrimPostureTests. -->
+  <PropertyGroup>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+  </PropertyGroup>
 
   <ItemGroup>
     <!-- Test-only. JsFolderAccess's wire DTOs are internal (not private) solely

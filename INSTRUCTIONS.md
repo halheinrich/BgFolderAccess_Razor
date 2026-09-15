@@ -142,6 +142,14 @@ The xUnit suite pins the C# side: `FolderPickLimits` validation, the outcome
 value types, and `JsFolderAccess`'s mapping seam over bUnit's scripted module
 interop (`SetupModule` — no real JS runs there).
 
+The library's trim posture (halheinrich/backgammon#197) is pinned by
+`BgFolderAccessRazorTrimPostureTests`, which asserts the built assembly
+carries the SDK-emitted `IsTrimmable` metadata — the one trace of the csproj
+setting a test can read. The analyzer switch beside it leaves no such trace:
+the trim analyzer runs in this library's own build under
+`TreatWarningsAsErrors`, so a trim-unsafe construct is a build error here, not
+a test failure, and not a finding one leg later in BgQuiz's trimmed publish.
+
 It also **runs the shipped `folderAccess.js` itself**, in Jint, via
 `FolderAccessModuleHost` — the real file, staged beside the test assembly by
 the csproj so a rename breaks the build rather than a test. That covers the

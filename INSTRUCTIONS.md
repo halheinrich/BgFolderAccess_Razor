@@ -23,7 +23,7 @@ https://github.com/halheinrich/BgFolderAccess_Razor — branch `main`.
 
 Standalone. (Deliberately no reference either direction with `XgFilter_Razor` —
 hosts that use both bridge them with one-line adapter glue, e.g. an
-`IFilterDocumentStorage` adapter over `IFolderAccess`'s picked-slot file I/O.)
+`IDocumentStorage` adapter over `IFolderAccess`'s picked-slot file I/O.)
 
 ## Layout
 

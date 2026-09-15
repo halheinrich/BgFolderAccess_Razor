@@ -35,8 +35,10 @@ and `Directory.Packages.props` (Central Package Management).
 components. Three areas:
 
 - **The host-facing seam** — `IFolderAccess`, the host's one gateway to the
-  browser's folder facilities, and `JsFolderAccess`, its implementation and
-  the library's only interop type.
+  browser's folder facilities; `JsFolderAccess`, its implementation and the
+  library's only interop type; and `BgFolderAccessJsonContext`, the
+  source-generated metadata its wire replies are read through (see Test
+  posture for why a context, not the runtime's own deserializer).
 - **The pick's values** — `FolderPickOutcome`, the result of one pick
   gesture; `PickedFile`, one buffered matching file; `PickTruncation`, one
   file kind's left-behind report; `FolderWriteCapability`, the pick-time
@@ -143,12 +145,31 @@ value types, and `JsFolderAccess`'s mapping seam over bUnit's scripted module
 interop (`SetupModule` — no real JS runs there).
 
 The library's trim posture (halheinrich/backgammon#197) is pinned by
-`BgFolderAccessRazorTrimPostureTests`, which asserts the built assembly
-carries the SDK-emitted `IsTrimmable` metadata — the one trace of the csproj
-setting a test can read. The analyzer switch beside it leaves no such trace:
-the trim analyzer runs in this library's own build under
-`TreatWarningsAsErrors`, so a trim-unsafe construct is a build error here, not
-a test failure, and not a finding one leg later in BgQuiz's trimmed publish.
+`BgFolderAccessRazorTrimPostureTests`: the built assembly carries the
+SDK-emitted `IsTrimmable` metadata (the one trace of the csproj setting a
+test can read), `BgFolderAccessJsonContext` generates metadata-only, and
+every wire DTO resolves through that context. The analyzer switch leaves no
+such trace: the trim analyzer runs in this library's own build under
+`TreatWarningsAsErrors`, so a *direct* trim-unsafe call — a reflection-bound
+serializer overload — is a build error here, not a test failure.
+
+That is the analyzer's whole reach, and it was over-claimed until the arc's
+proof (2026-09-15) said otherwise. `IJSObjectReference.InvokeAsync<T>`
+annotates `T` with `DynamicallyAccessedMembers`, which keeps `T`'s own
+constructor and members through a trim but is not transitive: a record
+reached only as the element type of `T`'s array property is named nowhere
+the trimmer looks, and BgQuiz's partial trim removed `JsPickedFile`'s
+constructor while the analyzer — which inspects the annotated call and finds
+it clean — reported nothing. The transitive DTO graph is therefore protected
+by a rule, not a flag: **no library type crosses interop as a type
+argument**. Every reply comes back as a `JsonElement` and is read through
+the context by one private helper (`JsFolderAccess.InvokeDtoAsync`), so the
+generator, not the trimmer, decides what the graph needs. The posture test
+catches a DTO the context does not reach; a DTO handed to interop *again*
+is caught only at runtime, by BgQuiz's trimmed e2e
+(`EnvironmentFidelityTests`, whose fixture publishes the trimmed AOT
+artifact) — that suite is the gate for the runtime half, and this repo's
+green build is not.
 
 It also **runs the shipped `folderAccess.js` itself**, in Jint, via
 `FolderAccessModuleHost` — the real file, staged beside the test assembly by
@@ -168,7 +189,8 @@ read this repo's green tests as coverage of the browser behavior.
 ## Public API
 
 All types `public`, root namespace `BgFolderAccess_Razor`. `JsFolderAccess`'s
-wire DTOs are `internal` (test-only `InternalsVisibleTo`).
+wire DTOs and `BgFolderAccessJsonContext` are `internal` (test-only
+`InternalsVisibleTo`).
 
 ### DI wiring (host `Program.cs`)
 
@@ -331,6 +353,18 @@ it re-opens a closed trap.
   a matcher** (`Setup<T>("enumeratePicked", _ => true)`) — an argument-less
   exact setup never matches, and the resulting "no setup" failure looks like
   a bunit bug rather than what it is.
+- **No library type crosses interop as `InvokeAsync<T>`'s type argument —
+  take a `JsonElement` back and read it through `BgFolderAccessJsonContext`
+  (`JsFolderAccess.InvokeDtoAsync`).** The annotation on `T` keeps `T`
+  through BgQuiz's trim, not the records nested in `T`; `JsPickedFile` lost
+  its constructor that way and the pick failed on the first file
+  (halheinrich/backgammon#197, measured 2026-09-15), with this repo's trim
+  analyzer silent because the call it inspects is annotated. A new reply
+  type goes on the context's `[JsonSerializable]` roots and through the
+  helper; the posture test fails a DTO the context cannot reach, and only
+  BgQuiz's trimmed e2e catches one handed to interop again. bUnit scripts
+  replies as `JsonElement`s serialized through the context for the same
+  reason — scripting the DTO would script the forbidden shape.
 
 ## Subproject-internal next steps
 

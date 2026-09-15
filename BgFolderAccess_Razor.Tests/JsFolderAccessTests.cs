@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Bunit;
 using Microsoft.JSInterop;
 
@@ -14,6 +16,15 @@ namespace BgFolderAccess_Razor.Tests;
 /// cross the wire and their left-behind counts cross back with the cap figure
 /// derived from the enforced table, and the slot file I/O passes the caller's
 /// file name through.
+///
+/// <para>
+/// The module's replies are scripted the way they arrive: as the
+/// <see cref="JsonElement"/> the JS runtime hands back, built from the reply
+/// DTO through <see cref="BgFolderAccessJsonContext"/> (see
+/// <see cref="OnTheWire{TDto}"/>). Scripting the DTO itself would script the
+/// very shape halheinrich/backgammon#197 forbids crossing interop, and would
+/// leave the context's deserialization — the half the fix added — unexercised.
+/// </para>
 /// </summary>
 public class JsFolderAccessTests : BunitContext
 {
@@ -41,10 +52,23 @@ public class JsFolderAccessTests : BunitContext
 
     private JsFolderAccess CreateSut() => new(JSInterop.JSRuntime, Limits);
 
+    /// <summary>
+    /// A scripted reply as it crosses the seam: the module's plain object,
+    /// arriving as the <see cref="JsonElement"/> the JS runtime hands back.
+    /// Built by serializing the DTO through the library's own context, so the
+    /// element carries the wire's camelCase shape and the seam under test reads
+    /// it back the way production does — the round trip is proved by every
+    /// test that then asserts on the mapped outcome.
+    /// </summary>
+    private static JsonElement OnTheWire<TDto>(TDto reply, JsonTypeInfo<TDto> wireShape) =>
+        JsonSerializer.SerializeToElement(reply, wireShape);
+
     /// <summary>Script <c>beginPick</c>'s reply — the browser-prompt half of the pick.</summary>
     private static void SetupBeginPick(BunitJSModuleInterop module, string status, string directoryName, bool writable) =>
-        module.Setup<JsFolderAccess.JsPickStart>("beginPick")
-            .SetResult(new JsFolderAccess.JsPickStart(status, directoryName, writable));
+        module.Setup<JsonElement>("beginPick")
+            .SetResult(OnTheWire(
+                new JsFolderAccess.JsPickStart(status, directoryName, writable),
+                BgFolderAccessJsonContext.Default.JsPickStart));
 
     /// <summary>Script <c>enumeratePicked</c>'s reply — the app-work half, nothing truncated.</summary>
     private static void SetupEnumerate(BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
@@ -60,8 +84,24 @@ public class JsFolderAccessTests : BunitContext
         JsFolderAccess.JsOmittedFiles[] omitted) =>
         // Matcher, not the argument-less overload: the call carries the caps
         // table, and an exact-argument setup would simply never match it.
-        module.Setup<JsFolderAccess.JsEnumerateResult>("enumeratePicked", _ => true)
-            .SetResult(new JsFolderAccess.JsEnumerateResult(files, omitted));
+        module.Setup<JsonElement>("enumeratePicked", _ => true)
+            .SetResult(OnTheWire(
+                new JsFolderAccess.JsEnumerateResult(files, omitted),
+                BgFolderAccessJsonContext.Default.JsEnumerateResult));
+
+    /// <summary>
+    /// Script <c>collectFallbackFiles</c>'s reply — the fallback mechanism's
+    /// one-call pick, with the same matcher caveat as <c>enumeratePicked</c>.
+    /// </summary>
+    private static void SetupCollectFallback(
+        BunitJSModuleInterop module,
+        string directoryName,
+        JsFolderAccess.JsPickedFile[] files,
+        JsFolderAccess.JsOmittedFiles[] omitted) =>
+        module.Setup<JsonElement>("collectFallbackFiles", _ => true)
+            .SetResult(OnTheWire(
+                new JsFolderAccess.JsFallbackResult(directoryName, files, omitted),
+                BgFolderAccessJsonContext.Default.JsFallbackResult));
 
     /// <summary>A hook that records nothing — for the cases the hook isn't what's under test.</summary>
     private static Func<Task> NoHook => () => Task.CompletedTask;
@@ -201,8 +241,7 @@ public class JsFolderAccessTests : BunitContext
         // table. The two mechanisms differing on this would be invisible until a
         // Firefox user's 3000-file folder behaved unlike a Chrome user's.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<JsFolderAccess.JsFallbackResult>("collectFallbackFiles", _ => true)
-            .SetResult(new JsFolderAccess.JsFallbackResult("Corpus", [], []));
+        SetupCollectFallback(module, "Corpus", [], []);
         var sut = CreateSut();
 
         await sut.CollectFallbackAsync(default);
@@ -278,9 +317,7 @@ public class JsFolderAccessTests : BunitContext
         // Truncation rides the fallback's result shape too, and only the kind
         // that was actually cut short appears.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<JsFolderAccess.JsFallbackResult>("collectFallbackFiles", _ => true)
-            .SetResult(new JsFolderAccess.JsFallbackResult(
-                "Huge", [], [new JsFolderAccess.JsOmittedFiles(".xgp", 7)]));
+        SetupCollectFallback(module, "Huge", [], [new JsFolderAccess.JsOmittedFiles(".xgp", 7)]);
         var sut = CreateSut();
 
         var outcome = await sut.CollectFallbackAsync(default);

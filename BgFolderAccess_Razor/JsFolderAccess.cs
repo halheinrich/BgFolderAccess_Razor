@@ -1,5 +1,7 @@
 namespace BgFolderAccess_Razor;
 
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Components;
 using Microsoft.JSInterop;
 
@@ -52,8 +54,18 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     }
 
     // The wire DTOs are internal (not private) solely so the bUnit module tests
-    // can construct scripted results; nothing outside this type and those tests
-    // touches them.
+    // can construct scripted results; nothing outside this type, the context
+    // and those tests touches them.
+    //
+    // A WIRE DTO IS NEVER A TYPE ARGUMENT TO INTEROP. Each reply is taken back
+    // as a JsonElement and read through BgFolderAccessJsonContext by
+    // InvokeDtoAsync below — the one spelling of the rule, which the three
+    // reply-returning calls use. InvokeAsync<T>'s trimmer annotation keeps T
+    // through a trim but not the records nested in T (halheinrich/backgammon#197:
+    // BgQuiz's trimmed publish lost JsPickedFile's constructor that way, with
+    // the analyzer silent because the call it inspects is annotated). The
+    // context names the whole graph at compile time, so the trimmer has
+    // nothing to decide. The context's doc comment carries the full account.
 
     /// <summary>
     /// The first half of the pick as the JS module shapes it (camelCase on the
@@ -87,6 +99,29 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     private Task<IJSObjectReference> ModuleAsync() =>
         _module ??= _js.InvokeAsync<IJSObjectReference>("import", ModulePath).AsTask();
 
+    /// <summary>
+    /// The one way a wire DTO comes back from the module: the call takes a
+    /// <see cref="JsonElement"/> — a framework type the JS runtime reads with
+    /// nothing of this assembly's — and the reply is deserialized here through
+    /// <paramref name="wireShape"/>, the context's compile-time metadata for
+    /// <typeparamref name="TDto"/>. Never <c>InvokeAsync&lt;TDto&gt;</c>: see the
+    /// rule above the DTOs. The trim-safe overload,
+    /// <c>JsonSerializer.Deserialize(JsonElement, JsonTypeInfo&lt;T&gt;)</c>, is
+    /// the one the analyzer accepts without a suppression.
+    /// </summary>
+    /// <exception cref="JsonException">
+    /// The module answered with JSON <c>null</c>, which no reply-returning
+    /// function of the shipped module does — a wire-contract violation, not an
+    /// expected absence, so it is not folded into a value.
+    /// </exception>
+    private static async ValueTask<TDto> InvokeDtoAsync<TDto>(
+        IJSObjectReference module, string identifier, JsonTypeInfo<TDto> wireShape, params object?[] args)
+    {
+        var reply = await module.InvokeAsync<JsonElement>(identifier, args);
+        return reply.Deserialize(wireShape)
+            ?? throw new JsonException($"'{identifier}' returned JSON null where a {typeof(TDto).Name} was expected.");
+    }
+
     /// <inheritdoc/>
     public async ValueTask<bool> SupportsDirectoryPickerAsync()
     {
@@ -106,7 +141,8 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(onPickAccepted);
 
         var module = await ModuleAsync();
-        var start = await module.InvokeAsync<JsPickStart>("beginPick");
+        var start = await InvokeDtoAsync(
+            module, "beginPick", BgFolderAccessJsonContext.Default.JsPickStart);
         if (start.Status == "cancelled")
         {
             return FolderPickOutcome.CancelledOutcome;
@@ -116,8 +152,9 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         // below is the "no feedback" stretch the hook exists to cover.
         await onPickAccepted();
 
-        var enumerated = await module.InvokeAsync<JsEnumerateResult>(
-            "enumeratePicked", _limits.MaxFileCounts);
+        var enumerated = await InvokeDtoAsync(
+            module, "enumeratePicked", BgFolderAccessJsonContext.Default.JsEnumerateResult,
+            _limits.MaxFileCounts);
         var files = await BufferFilesAsync(module, enumerated.Files);
         var capability = start.Writable ? FolderWriteCapability.Enabled : FolderWriteCapability.PermissionDenied;
         return new FolderPickOutcome(
@@ -135,8 +172,9 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     public async Task<FolderPickOutcome> CollectFallbackAsync(ElementReference fallbackInput)
     {
         var module = await ModuleAsync();
-        var result = await module.InvokeAsync<JsFallbackResult>(
-            "collectFallbackFiles", fallbackInput, _limits.MaxFileCounts);
+        var result = await InvokeDtoAsync(
+            module, "collectFallbackFiles", BgFolderAccessJsonContext.Default.JsFallbackResult,
+            fallbackInput, _limits.MaxFileCounts);
         var files = await BufferFilesAsync(module, result.Files);
         return new FolderPickOutcome(
             Cancelled: false, result.DirectoryName, files, FolderWriteCapability.BrowserUnsupported,

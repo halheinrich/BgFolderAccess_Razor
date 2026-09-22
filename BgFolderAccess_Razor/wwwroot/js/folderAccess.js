@@ -374,14 +374,16 @@ const NOT_WRITABLE_REJECTIONS = ['NoModificationAllowedError', 'NotAllowedError'
 // change.)
 //
 // ABORT, NEVER CLOSE. Chromium writes to a swap file until close(); abort()
-// discards it and leaves the original byte-identical (measured, #261). A
-// close() here would replace the file with the empty stream.
+// discards it and leaves the original byte-identical (measured,
+// halheinrich/backgammon#261). A close() here would replace the file with the
+// empty stream.
 //
 // THE LIMIT: plain createWritable() does not open the original, so a file
 // another program holds open answers 'writable' and fails only at the host's
 // first real write. { keepExistingData: true } does catch that file — it
 // copies the original — but on the locked file it left a .crswap behind
-// (#261), and a probe that leaves a file in the folder is a write. Not used.
+// (halheinrich/backgammon#261), and a probe that leaves a file in the folder
+// is a write. Not used.
 export async function probePickedFileWritability(fileName) {
     if (pickedHandle === null) {
         throw new Error('No picked folder to probe.');

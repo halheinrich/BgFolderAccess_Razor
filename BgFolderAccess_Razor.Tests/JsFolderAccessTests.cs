@@ -14,8 +14,9 @@ namespace BgFolderAccess_Razor.Tests;
 /// cancelled is a value not an exception, writable maps to capability, the
 /// byte cap fails the pick before bytes move, the per-extension count caps
 /// cross the wire and their left-behind counts cross back with the cap figure
-/// derived from the enforced table, and the slot file I/O passes the caller's
-/// file name through.
+/// derived from the enforced table, the slot file I/O passes the caller's
+/// file name through, and the writability probe's three answers map one-to-one
+/// with anything else refused.
 ///
 /// <para>
 /// The module's replies are scripted the way they arrive: as the
@@ -399,5 +400,50 @@ public class JsFolderAccessTests : BunitContext
 
         Assert.Null(await sut.ReadPickedFileAsync("absent.json"));
         Assert.Null(await sut.ReadActiveFileAsync("absent.json"));
+    }
+
+    [Theory]
+    [InlineData("absent", PickedFileWritability.Absent)]
+    [InlineData("writable", PickedFileWritability.Writable)]
+    [InlineData("notWritable", PickedFileWritability.NotWritable)]
+    public async Task ProbePickedFile_MapsEachModuleAnswer(string wire, PickedFileWritability expected)
+    {
+        // The module turns the browser's answer into one of three strings;
+        // this seam is the one place they become the enum. The caller's name
+        // is forwarded verbatim, as for the sibling picked-slot reads.
+        var module = JSInterop.SetupModule(ModulePath);
+        module.Setup<string?>("probePickedFileWritability", _ => true).SetResult(wire);
+        var sut = CreateSut();
+
+        Assert.Equal(expected, await sut.ProbePickedFileWritabilityAsync("stats.json"));
+        Assert.Equal("stats.json", module.VerifyInvoke("probePickedFileWritability").Arguments[0]);
+    }
+
+    [Theory]
+    [InlineData("Writable")]
+    [InlineData("readOnly")]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task ProbePickedFile_AnAnswerTheModuleDoesNotShip_Throws(string? wire)
+    {
+        // An unknown answer is a wire-contract violation, not a fourth outcome
+        // to guess at — including a case-variant of a real one, since the
+        // module's spelling is a fact, not a tolerance.
+        var module = JSInterop.SetupModule(ModulePath);
+        module.Setup<string?>("probePickedFileWritability", _ => true).SetResult(wire);
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<JsonException>(() => sut.ProbePickedFileWritabilityAsync("stats.json"));
+    }
+
+    [Fact]
+    public async Task ProbePickedFile_NullName_ThrowsBeforeInterop()
+    {
+        // Not even the module import runs — the root interop saw no call.
+        JSInterop.SetupModule(ModulePath);
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => sut.ProbePickedFileWritabilityAsync(null!));
+        Assert.Empty(JSInterop.Invocations);
     }
 }

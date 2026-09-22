@@ -218,6 +218,38 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     }
 
     /// <inheritdoc/>
+    /// <exception cref="JsonException">
+    /// The module answered with a string it does not ship (see
+    /// <see cref="ToWritability"/>).
+    /// </exception>
+    public async Task<PickedFileWritability> ProbePickedFileWritabilityAsync(string fileName)
+    {
+        ArgumentNullException.ThrowIfNull(fileName);
+        var module = await ModuleAsync();
+        return ToWritability(await module.InvokeAsync<string?>("probePickedFileWritability", fileName));
+    }
+
+    /// <summary>
+    /// Map <c>probePickedFileWritability</c>'s answer onto
+    /// <see cref="PickedFileWritability"/> — the one place the wire strings are
+    /// read. The module has already turned the browser's answer into one of
+    /// three strings; which <c>DOMException</c> names mean "not writable" is
+    /// decided there, in one array, and never re-interpreted here.
+    /// </summary>
+    /// <exception cref="JsonException">
+    /// Any other answer, <c>null</c> included — a wire-contract violation by the
+    /// shipped module, not an expected outcome, so it is not folded into a value.
+    /// </exception>
+    private static PickedFileWritability ToWritability(string? wire) => wire switch
+    {
+        "absent" => PickedFileWritability.Absent,
+        "writable" => PickedFileWritability.Writable,
+        "notWritable" => PickedFileWritability.NotWritable,
+        _ => throw new JsonException(
+            $"'probePickedFileWritability' returned '{wire ?? "null"}', which is not one of the module's answers."),
+    };
+
+    /// <inheritdoc/>
     public async Task<string?> ReadActiveFileAsync(string fileName)
     {
         ArgumentNullException.ThrowIfNull(fileName);

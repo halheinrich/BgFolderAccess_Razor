@@ -42,7 +42,8 @@ components. Three areas:
 - **The pick's values** — `FolderPickOutcome`, the result of one pick
   gesture; `PickedFile`, one buffered matching file; `PickTruncation`, one
   file kind's left-behind report; `FolderWriteCapability`, the pick-time
-  write-capability taxonomy; `FolderPickLimits`, the host-supplied caps
+  write-capability taxonomy; `PickedFileWritability`, one named file's
+  writability as the setup-time probe answers it; `FolderPickLimits`, the host-supplied caps
   configuration, validated at construction.
 - **The JS module** — `wwwroot/js/folderAccess.js`, the ES module shipped as
   a static web asset: both pick mechanisms and the two-slot state, with
@@ -88,7 +89,8 @@ is a property of the moment.
 - **picked slot** — populated by a pick gesture; the directory handle
   (FS-Access) or null (fallback) plus a name → handle/File map for byte reads.
   Serves setup-time named documents (`ReadPickedFileAsync` /
-  `WritePickedFileAsync`).
+  `WritePickedFileAsync`), and answers whether one can be written before the
+  first write tries (`ProbePickedFileWritabilityAsync`).
 - **active slot** — bound only by `PromoteToActiveAsync()`; the folder a
   running session records through (`ReadActiveFileAsync` /
   `WriteActiveFileAsync`).
@@ -137,6 +139,25 @@ folder is `FolderPickOutcome.Cancelled`, a write denial is
 read. Unexpected browser failures surface as `JSException` for hosts to catch
 and degrade on. The one deliberate throw is the byte-cap
 `InvalidOperationException` above.
+
+The writability probe (`ProbePickedFileWritabilityAsync`, halheinrich/backgammon#261)
+answers `PickedFileWritability` values the same way. A missing file is
+`Absent`. `NotWritable` is a `readwrite` `queryPermission` that is not
+`'granted'` — checked first, so the probe never prompts — or a
+`createWritable()` rejecting with one of the two names in the module's
+`NOT_WRITABLE_REJECTIONS`: `NoModificationAllowedError` (the read-only
+attribute, measured in Chrome 153) and `NotAllowedError` (permission absent;
+the backstop behind the pre-check). Every other rejection propagates as
+`JSException`, as does probing with no File System Access folder picked. A
+module answer outside the three strings is a wire-contract violation and
+throws `JsonException` in `JsFolderAccess.ToWritability`, the one mapping
+point.
+
+**The probe's limit, measured:** it catches a file the browser cannot open for
+writing (read-only attribute, no permission), not one another program holds
+open. Plain `createWritable()` does not open the original, so a locked file
+answers `Writable` and is still discovered at the first real write — hosts keep
+their write-failure notices for that reason.
 
 ### Test posture (honest scope)
 
@@ -215,6 +236,7 @@ Task<FolderPickOutcome> CollectFallbackAsync(ElementReference fallbackInput);
 ValueTask<bool> PromoteToActiveAsync();                          // false = no-write signal
 Task<string?> ReadPickedFileAsync(string fileName);              // null = absent, not error
 Task WritePickedFileAsync(string fileName, string json);
+Task<PickedFileWritability> ProbePickedFileWritabilityAsync(string fileName); // never prompts, never writes
 Task<string?> ReadActiveFileAsync(string fileName);              // null = absent, not error
 Task WriteActiveFileAsync(string fileName, string json);
 ValueTask ClearPickedAsync();                                    // picked slot only
@@ -249,6 +271,7 @@ sealed record FolderPickOutcome(
 sealed record PickedFile(string FileName, byte[] Bytes);           // name keeps its extension
 sealed record PickTruncation(string Extension, int OmittedCount, int MaxFileCount);
 enum FolderWriteCapability { Enabled, BrowserUnsupported, PermissionDenied }
+enum PickedFileWritability { Absent, Writable, NotWritable }        // one named file, per probe
 ```
 
 Host tests fake `IFolderAccess` and construct outcomes directly — the records
@@ -365,6 +388,23 @@ it re-opens a closed trap.
   BgQuiz's trimmed e2e catches one handed to interop again. bUnit scripts
   replies as `JsonElement`s serialized through the context for the same
   reason — scripting the DTO would script the forbidden shape.
+- **The probe aborts a writable stream — never `close()` a probe stream.**
+  Chromium writes to a swap file until `close()`, so an aborted stream leaves
+  the original byte-identical (measured, halheinrich/backgammon#261); a
+  `close()` would replace the file with the empty stream. Nor reach for
+  `createWritable({ keepExistingData: true })` to catch locked files: it does
+  catch them, but on the locked file it left a `.crswap` in the folder, and a
+  probe that leaves a file behind is a write.
+- **`Absent` is not `Writable`.** The probe never creates the file, so a
+  missing one says nothing about whether it *could* be created — a caller that
+  wants to know has only the folder permission (`FolderWriteCapability`) to go
+  on.
+- **The probe never prompts, and the `queryPermission` pre-check is why.**
+  `createWritable()` on a handle whose write permission is still `'prompt'`
+  shows the Edit-files prompt when the call carries user activation, so a
+  host probing from a click handler would get a prompt instead of an answer.
+  Don't drop the pre-check as redundant with the `NotAllowedError` entry —
+  that entry is only the backstop for a grant revoked between the two calls.
 
 ## Subproject-internal next steps
 

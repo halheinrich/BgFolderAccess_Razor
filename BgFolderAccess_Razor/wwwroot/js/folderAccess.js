@@ -14,7 +14,7 @@
 //
 // Handles never cross the interop boundary — C# sees names, sizes, bytes, and
 // booleans. Expected outcomes are result values (cancelled pick, missing named
-// file, denied permission); only unexpected browser failures throw, surfacing
+// file, denied permission, a named file the browser won't write); only unexpected browser failures throw, surfacing
 // as JSException on the C# side.
 
 let pickedHandle = null;      // FileSystemDirectoryHandle | null (fallback picks have none)
@@ -341,6 +341,74 @@ export async function writePickedFile(fileName, text) {
     const stream = await fileHandle.createWritable();
     await stream.write(text);
     await stream.close();
+}
+
+// The createWritable() rejections that mean "this file cannot be written" —
+// the probe's only list of them. Measured in Chrome 153 on Windows
+// (halheinrich/backgammon#261, Step 0, 2026-09-22): a file with the read-only
+// attribute rejects with NoModificationAllowedError. NotAllowedError is
+// permission absent — the backstop behind the queryPermission pre-check in
+// probePickedFileWritability, for a grant revoked between the two calls.
+// Anything not listed propagates.
+const NOT_WRITABLE_REJECTIONS = ['NoModificationAllowedError', 'NotAllowedError'];
+
+// Writability probe of a named file in the PICKED slot — setup time, beside
+// readPickedFile/writePickedFile, so a host learns at the pick what it would
+// otherwise learn at its first real write. Returns 'absent' | 'writable' |
+// 'notWritable'; JsFolderAccess maps the strings, and the DOMException names
+// are interpreted here and nowhere else.
+//
+// ABSENT IS NOT WRITABLE. A missing file answers 'absent' and nothing is
+// created (never { create: true }): there is nothing to probe, and whether the
+// file COULD be created is the folder's write grant, which the caller already
+// has from the pick.
+//
+// THE PROBE NEVER PROMPTS. createWritable() on a handle whose write permission
+// is still 'prompt' shows the Edit-files prompt when the call carries user
+// activation — a host probing from a click handler would get a prompt instead
+// of an answer. The queryPermission pre-check answers 'notWritable' for
+// anything but 'granted' before createWritable() is ever reached, which is
+// what makes it safe to probe without checking the pick's capability first.
+// (The same pre-check at pick time would skip beginPick's doomed write request
+// on an already-granted folder — halheinrich/backgammon#110, a separate
+// change.)
+//
+// ABORT, NEVER CLOSE. Chromium writes to a swap file until close(); abort()
+// discards it and leaves the original byte-identical (measured, #261). A
+// close() here would replace the file with the empty stream.
+//
+// THE LIMIT: plain createWritable() does not open the original, so a file
+// another program holds open answers 'writable' and fails only at the host's
+// first real write. { keepExistingData: true } does catch that file — it
+// copies the original — but on the locked file it left a .crswap behind
+// (#261), and a probe that leaves a file in the folder is a write. Not used.
+export async function probePickedFileWritability(fileName) {
+    if (pickedHandle === null) {
+        throw new Error('No picked folder to probe.');
+    }
+    let fileHandle;
+    try {
+        fileHandle = await pickedHandle.getFileHandle(fileName);
+    } catch (e) {
+        if (e instanceof DOMException && e.name === 'NotFoundError') {
+            return 'absent';
+        }
+        throw e;
+    }
+    if (await fileHandle.queryPermission({ mode: 'readwrite' }) !== 'granted') {
+        return 'notWritable';
+    }
+    let stream;
+    try {
+        stream = await fileHandle.createWritable();
+    } catch (e) {
+        if (e instanceof DOMException && NOT_WRITABLE_REJECTIONS.includes(e.name)) {
+            return 'notWritable';
+        }
+        throw e;
+    }
+    await stream.abort();
+    return 'writable';
 }
 
 // Begin-work bind: promote the picked slot's handle to the active slot.

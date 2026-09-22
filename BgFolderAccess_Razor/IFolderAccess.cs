@@ -19,7 +19,8 @@ using Microsoft.AspNetCore.Components;
 /// the active slot keeps its handle until the next promotion re-binds. The
 /// picked slot additionally serves setup-time documents on the folder being
 /// configured (<see cref="ReadPickedFileAsync"/> /
-/// <see cref="WritePickedFileAsync"/>) — never touching the active slot a
+/// <see cref="WritePickedFileAsync"/>, and
+/// <see cref="ProbePickedFileWritabilityAsync"/> ahead of a write) — never touching the active slot a
 /// running session records through.
 /// </para>
 ///
@@ -28,9 +29,10 @@ using Microsoft.AspNetCore.Components;
 /// pick that ended with no folder — dismissed picker or declined read — is
 /// <see cref="FolderPickOutcome.Cancelled"/>, a write denial is
 /// <see cref="FolderWriteCapability.PermissionDenied"/>, a missing named file
-/// is a <c>null</c> read. Unexpected browser failures surface as
-/// <see cref="Microsoft.JSInterop.JSException"/> for callers to catch and
-/// degrade on.
+/// is a <c>null</c> read, a named file the browser won't write is
+/// <see cref="PickedFileWritability.NotWritable"/>. Unexpected browser
+/// failures surface as <see cref="Microsoft.JSInterop.JSException"/> for
+/// callers to catch and degrade on.
 /// </para>
 /// </summary>
 public interface IFolderAccess
@@ -118,6 +120,30 @@ public interface IFolderAccess
     /// slot's folder, replacing any existing content.
     /// </summary>
     Task WritePickedFileAsync(string fileName, string json);
+
+    /// <summary>
+    /// Ask whether the named file in the <i>picked</i> slot's folder can be
+    /// written — at setup time, beside <see cref="ReadPickedFileAsync"/>, so a
+    /// host learns at the pick what it would otherwise learn at its first real
+    /// write. The probe opens the file for writing and aborts the stream: no
+    /// byte changes, nothing is created, and it never shows a permission
+    /// prompt, so it is safe to call without checking the pick's
+    /// <see cref="FolderWriteCapability"/> first (no write grant answers
+    /// <see cref="PickedFileWritability.NotWritable"/>).
+    ///
+    /// <para>
+    /// A file another program holds open is <b>not</b> caught — it answers
+    /// <see cref="PickedFileWritability.Writable"/>; see
+    /// <see cref="PickedFileWritability"/> for the measured limit.
+    /// </para>
+    /// </summary>
+    /// <exception cref="ArgumentNullException"><paramref name="fileName"/> is null.</exception>
+    /// <exception cref="Microsoft.JSInterop.JSException">
+    /// No File System Access folder is picked (fallback pick, cleared slot, or
+    /// never picked), as for <see cref="ReadPickedFileAsync"/>; or the browser
+    /// failed the probe in a way that is not one of the expected answers.
+    /// </exception>
+    Task<PickedFileWritability> ProbePickedFileWritabilityAsync(string fileName);
 
     /// <summary>
     /// Read the named file's text from the <i>active</i> slot's folder — the

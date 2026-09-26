@@ -109,7 +109,10 @@ library ships **no numbers** — each host's values encode its own cost model
 
 - The **whole count table crosses the interop boundary on every enumeration**;
   the JS module derives both of its jobs from it — which names are matching
-  files, and how many of each to take — and keeps no copy (SSOT).
+  files, and how many of each to take — and keeps no copy (SSOT). It crosses
+  as one JSON object that `JsFolderAccess.ToWireCaps` writes, members in the
+  table's order, so the module's `Object.keys` order (and with it the
+  left-behind report's order) is the host's.
 - **Count caps truncate, never fail**, per extension independently, in the JS
   module (the only place an extension is known before transfer). What was left
   behind rides back as `FolderPickOutcome.Truncations`.
@@ -251,14 +254,15 @@ I/O is name-parameterized by design.
 
 ```csharp
 FolderPickLimits(IEnumerable<KeyValuePair<string, int>> maxFileCounts, long maxFileBytes);
-IReadOnlyDictionary<string, int> MaxFileCounts { get; }  // insertion-ordered
+ImmutableArray<KeyValuePair<string, int>> MaxFileCounts { get; }  // the ctor's order, by position
 long MaxFileBytes { get; }
 long MaxFileMegabytes { get; }                           // derived, floored MiB
 int MaxFileCountFor(string extension);
 ```
 
 Ctor validates: non-empty table; lower-case dot-leading keys; no duplicates;
-suffix-disjoint keys; positive counts; positive byte cap.
+suffix-disjoint keys; positive counts; positive byte cap. The table is copied
+in, so the host's source collection cannot reach it afterwards.
 
 ### Outcome types
 
@@ -325,6 +329,17 @@ it re-opens a closed trap.
   copy.** Both of the module's jobs (which names match, how many to take)
   derive from the passed table. Adding a constant or default in the JS is a
   second encoding that will drift (SSOT).
+- **Nothing public hands out a collection a caller can write back into**
+  (halheinrich/backgammon#273). `MaxFileCounts` used to be the private
+  `Dictionary` behind `IReadOnlyDictionary`, and a cast wrote caps past the
+  constructor's validation. It is an `ImmutableArray` now, because an array's
+  order is its position, a documented fact. Neither `Dictionary` nor
+  `ReadOnlyDictionary` documents an enumeration order, and "insertion order is
+  preserved" was an implementation detail. Don't swap in a dictionary for
+  lookup convenience; `MaxFileCountFor` is the lookup.
+  `MaxFileCounts_ImplementsExactlyTheInterfacesTheWriteTestCovers` fails any
+  new shape until every writing member of every interface it implements has
+  been tried.
 - **Suffix-disjoint extension keys are a constructed fact now.** The JS
   classifier takes the first suffix match; `FolderPickLimits`'s ctor rejects
   a key that is a suffix of another key (e.g. `.gz` alongside `.tar.gz`).

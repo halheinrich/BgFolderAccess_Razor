@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace BgFolderAccess_Razor;
 
 /// <summary>
@@ -28,14 +30,13 @@ namespace BgFolderAccess_Razor;
 /// </summary>
 public sealed class FolderPickLimits
 {
-    private readonly Dictionary<string, int> _maxFileCounts;
-
     /// <summary>
     /// Create a validated limits configuration.
     /// </summary>
     /// <param name="maxFileCounts">
     /// The per-extension file-count caps, in the order any per-kind truncation
-    /// report should read them (insertion order is preserved). Keys are
+    /// report should read them — <see cref="MaxFileCounts"/> keeps this
+    /// sequence's order, entry for entry. Keys are
     /// lower-case, dot-leading extensions (e.g. <c>".xg"</c>); values are the
     /// maximum number of files of that kind a single pick admits.
     /// </param>
@@ -57,7 +58,8 @@ public sealed class FolderPickLimits
             throw new ArgumentException("The per-file byte cap must be positive.", nameof(maxFileBytes));
         }
 
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var counts = ImmutableArray.CreateBuilder<KeyValuePair<string, int>>();
         foreach (var (extension, count) in maxFileCounts)
         {
             if (extension is null || extension.Length < 2 || extension[0] != '.'
@@ -75,11 +77,13 @@ public sealed class FolderPickLimits
                     $"The count cap for '{extension}' must be positive.", nameof(maxFileCounts));
             }
 
-            if (!counts.TryAdd(extension, count))
+            if (!seen.Add(extension))
             {
                 throw new ArgumentException(
                     $"'{extension}' appears more than once in the count-cap table.", nameof(maxFileCounts));
             }
+
+            counts.Add(new KeyValuePair<string, int>(extension, count));
         }
 
         if (counts.Count == 0)
@@ -91,11 +95,11 @@ public sealed class FolderPickLimits
         // takes the first hit, so a key that is a suffix of another key would
         // make a file's kind depend on table order. Rejecting the pair here
         // turns that comment-only module assumption into a constructed fact.
-        foreach (var a in counts.Keys)
+        foreach (var (a, _) in counts)
         {
-            foreach (var b in counts.Keys)
+            foreach (var (b, _) in counts)
             {
-                if (!ReferenceEquals(a, b) && b.EndsWith(a, StringComparison.Ordinal))
+                if (a != b && b.EndsWith(a, StringComparison.Ordinal))
                 {
                     throw new ArgumentException(
                         $"'{a}' is a suffix of '{b}' — extension keys must be suffix-disjoint "
@@ -105,7 +109,7 @@ public sealed class FolderPickLimits
             }
         }
 
-        _maxFileCounts = counts;
+        MaxFileCounts = counts.DrainToImmutable();
         MaxFileBytes = maxFileBytes;
     }
 
@@ -123,8 +127,31 @@ public sealed class FolderPickLimits
     /// here rather than in the module is what stops the two languages from
     /// disagreeing about either job.
     /// </para>
+    ///
+    /// <para>
+    /// <b>Order is position.</b> Entry <c>i</c> is the <c>i</c>-th pair the
+    /// constructor was given, and that order is the table's contract: the
+    /// module's left-behind report reads in it, so a multi-kind notice reads
+    /// the way the host wrote its table. The order rests on
+    /// <see cref="ImmutableArray{T}"/> being an array — "an array that is
+    /// immutable, meaning it can't be changed once it's created", whose
+    /// indexer "gets the element at the specified index" and whose enumerator
+    /// "advances to the next value in the array" (the type's API reference on
+    /// Microsoft Learn). A dictionary would not do: neither
+    /// <c>Dictionary&lt;TKey,TValue&gt;</c> nor
+    /// <c>ReadOnlyDictionary&lt;TKey,TValue&gt;</c> documents an enumeration
+    /// order, and the table's order is a promise this type makes.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Immutable, not a read-only view.</b> Nothing here aliases a
+    /// collection anyone can write: every writing member of every interface
+    /// the array implements throws <see cref="NotSupportedException"/>, so no
+    /// cast reopens the table this type validated. Look a cap up by extension
+    /// with <see cref="MaxFileCountFor"/>.
+    /// </para>
     /// </summary>
-    public IReadOnlyDictionary<string, int> MaxFileCounts => _maxFileCounts;
+    public ImmutableArray<KeyValuePair<string, int>> MaxFileCounts { get; }
 
     /// <summary>
     /// Per-file size cap in bytes. Enforced at pick time by
@@ -153,5 +180,19 @@ public sealed class FolderPickLimits
     /// JS module which extensions exist, so it can only report back a key from
     /// this table.
     /// </exception>
-    public int MaxFileCountFor(string extension) => _maxFileCounts[extension];
+    public int MaxFileCountFor(string extension)
+    {
+        // A scan, not a second keyed copy of the table: the table is a handful
+        // of kinds (the constructor's suffix check is already quadratic in it),
+        // and one stored representation is one thing that can be true.
+        foreach (var (key, count) in MaxFileCounts)
+        {
+            if (string.Equals(key, extension, StringComparison.Ordinal))
+            {
+                return count;
+            }
+        }
+
+        throw new KeyNotFoundException($"'{extension}' is not a key of the count-cap table.");
+    }
 }

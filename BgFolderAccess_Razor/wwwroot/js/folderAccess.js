@@ -23,7 +23,8 @@ let activeHandle = null;      // FileSystemDirectoryHandle | null — the runnin
 
 // Which names are matching files, and how many of each kind a pick may take,
 // both arrive from C# as the `limits` argument on every enumeration: the object
-// FolderPickLimits.MaxFileCounts serializes to, e.g. { '.xg': 500, '.xgp': 2000 }.
+// JsFolderAccess writes from FolderPickLimits.MaxFileCounts, members in the
+// table's order, e.g. { '.xg': 500, '.xgp': 2000 }.
 // The module deliberately keeps NO copy of either fact — a second list here is a
 // second thing to update when the caps or the kinds change.
 function matchingExtensionOf(name, limits) {

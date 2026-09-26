@@ -1,5 +1,7 @@
 namespace BgFolderAccess_Razor;
 
+using System.Buffers;
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Components;
@@ -40,6 +42,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
 
     private readonly IJSRuntime _js;
     private readonly FolderPickLimits _limits;
+    private readonly JsonElement _wireCaps;
     private Task<IJSObjectReference>? _module;
 
     /// <summary>
@@ -51,6 +54,47 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     {
         _js = js ?? throw new ArgumentNullException(nameof(js));
         _limits = limits ?? throw new ArgumentNullException(nameof(limits));
+        _wireCaps = ToWireCaps(limits.MaxFileCounts);
+    }
+
+    /// <summary>
+    /// The caps table as the module receives it: one JSON object,
+    /// <c>{ ".xg": 500, ".xgp": 2000 }</c>, whose members are written in
+    /// <see cref="FolderPickLimits.MaxFileCounts"/>' order — derived here, once,
+    /// from the one table, so the module still holds no copy of its own.
+    ///
+    /// <para>
+    /// <b>Why written by hand.</b> The order is the table's contract and the
+    /// module's left-behind report reads in it, so the wire has to carry it —
+    /// and <see cref="Utf8JsonWriter"/> writes members in exactly the order it
+    /// is told, with no reflection for a trim to break. The JS side keeps it:
+    /// <c>JSON.parse</c> creates properties in text order, and
+    /// <c>Object.keys</c> lists string keys in creation order for every key
+    /// that is not an array index — a dot-leading extension never is.
+    /// </para>
+    ///
+    /// <para>
+    /// A <see cref="JsonElement"/> crosses as an argument the way it crosses as
+    /// a reply: a framework type the JS runtime writes with its own converter
+    /// and nothing of this assembly's.
+    /// </para>
+    /// </summary>
+    private static JsonElement ToWireCaps(ImmutableArray<KeyValuePair<string, int>> caps)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var (extension, cap) in caps)
+            {
+                writer.WriteNumber(extension, cap);
+            }
+
+            writer.WriteEndObject();
+        }
+
+        using var document = JsonDocument.Parse(buffer.WrittenMemory);
+        return document.RootElement.Clone();
     }
 
     // The wire DTOs are internal (not private) solely so the bUnit module tests
@@ -154,7 +198,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
 
         var enumerated = await InvokeDtoAsync(
             module, "enumeratePicked", BgFolderAccessJsonContext.Default.JsEnumerateResult,
-            _limits.MaxFileCounts);
+            _wireCaps);
         var files = await BufferFilesAsync(module, enumerated.Files);
         var capability = start.Writable ? FolderWriteCapability.Enabled : FolderWriteCapability.PermissionDenied;
         return new FolderPickOutcome(
@@ -174,7 +218,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         var module = await ModuleAsync();
         var result = await InvokeDtoAsync(
             module, "collectFallbackFiles", BgFolderAccessJsonContext.Default.JsFallbackResult,
-            fallbackInput, _limits.MaxFileCounts);
+            fallbackInput, _wireCaps);
         var files = await BufferFilesAsync(module, result.Files);
         return new FolderPickOutcome(
             Cancelled: false, result.DirectoryName, files, FolderWriteCapability.BrowserUnsupported,

@@ -217,38 +217,59 @@ public class JsFolderAccessTests : BunitContext
         Assert.Equal(FolderWriteCapability.Enabled, outcome.Capability);
     }
 
+    /// <summary>
+    /// Caps in an order that is neither ordinal nor length order, for the wire
+    /// pins: a table sorted, or re-keyed through an unordered collection, on
+    /// its way down would reach the module in a different order and fail them.
+    /// </summary>
+    private static readonly FolderPickLimits UnsortedLimits = new(
+        [new(".xgp", 5), new(".mat", 7), new(".xg", 3)],
+        maxFileBytes: 1);
+
+    /// <summary>
+    /// The caps argument is the module's plain object — every extension of the
+    /// enforced table, each with its cap, members in the table's order. Pinned
+    /// as exact JSON text: the text's member order is what <c>JSON.parse</c>
+    /// turns into the module's <c>Object.keys</c> order, the order its
+    /// left-behind report reads in.
+    /// </summary>
+    private static void AssertIsTheWireCaps(object? argument)
+    {
+        var wire = Assert.IsType<JsonElement>(argument);
+        Assert.Equal("""{".xgp":5,".mat":7,".xg":3}""", wire.GetRawText());
+    }
+
     [Fact]
-    public async Task PickFolder_PassesThePerExtensionCapsToTheModule()
+    public async Task PickFolder_PassesThePerExtensionCapsToTheModule_InTableOrder()
     {
         // SSOT, caps edition: the JS module holds no copy of the caps — or of
         // which extensions are matching files — so both jobs it does with that
         // table are only correct if the injected instance's table is handed
-        // down on the call. Same pin as the file-name pairs below.
+        // down on the call, in the table's order. Same pin as the file-name
+        // pairs below.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupEnumerate(module);
-        var sut = CreateSut();
+        var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.PickFolderAsync(NoHook);
 
-        var enumerate = module.VerifyInvoke("enumeratePicked");
-        Assert.Same(Limits.MaxFileCounts, enumerate.Arguments[0]);
+        AssertIsTheWireCaps(module.VerifyInvoke("enumeratePicked").Arguments[0]);
     }
 
     [Fact]
-    public async Task CollectFallback_PassesThePerExtensionCapsToTheModule()
+    public async Task CollectFallback_PassesThePerExtensionCapsToTheModule_InTableOrder()
     {
         // The fallback mechanism is capped identically — same module, same
         // table. The two mechanisms differing on this would be invisible until a
         // Firefox user's 3000-file folder behaved unlike a Chrome user's.
         var module = JSInterop.SetupModule(ModulePath);
         SetupCollectFallback(module, "Corpus", [], []);
-        var sut = CreateSut();
+        var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.CollectFallbackAsync(default);
 
-        var collect = module.VerifyInvoke("collectFallbackFiles");
-        Assert.Same(Limits.MaxFileCounts, collect.Arguments[1]);
+        AssertIsTheWireCaps(module.VerifyInvoke("collectFallbackFiles").Arguments[1]);
     }
 
     [Fact]

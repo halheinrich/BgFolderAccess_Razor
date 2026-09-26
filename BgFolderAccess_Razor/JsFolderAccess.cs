@@ -2,6 +2,7 @@ namespace BgFolderAccess_Razor;
 
 using System.Buffers;
 using System.Collections.Immutable;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Components;
@@ -347,8 +348,12 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
             using var ms = new MemoryStream();
             await stream.CopyToAsync(ms);
             // file.Name carries the extension — the stated PickedFile.FileName
-            // contract hosts may discriminate format from.
-            picked.Add(new PickedFile(file.Name, ms.ToArray()));
+            // contract hosts may discriminate format from. The bytes move into
+            // the immutable array without a copy: ToArray's result is fresh and
+            // this method keeps no reference to it, so the PickedFile is its
+            // only owner from here on.
+            picked.Add(new PickedFile(
+                file.Name, ImmutableCollectionsMarshal.AsImmutableArray(ms.ToArray())));
         }
 
         return picked;

@@ -272,7 +272,8 @@ sealed record FolderPickOutcome(
     FolderWriteCapability Capability, IReadOnlyList<PickTruncation> Truncations)
 { static FolderPickOutcome CancelledOutcome { get; } }
 
-sealed record PickedFile(string FileName, byte[] Bytes);           // name keeps its extension
+sealed record PickedFile(string FileName, ImmutableArray<byte> Bytes)  // name keeps its extension
+{ Stream OpenRead(); }                                             // fresh, read-only, no copy
 sealed record PickTruncation(string Extension, int OmittedCount, int MaxFileCount);
 enum FolderWriteCapability { Enabled, BrowserUnsupported, PermissionDenied }
 enum PickedFileWritability { Absent, Writable, NotWritable }        // one named file, per probe
@@ -336,10 +337,16 @@ it re-opens a closed trap.
   order is its position, a documented fact. Neither `Dictionary` nor
   `ReadOnlyDictionary` documents an enumeration order, and "insertion order is
   preserved" was an implementation detail. Don't swap in a dictionary for
-  lookup convenience; `MaxFileCountFor` is the lookup.
-  `MaxFileCounts_ImplementsExactlyTheInterfacesTheWriteTestCovers` fails any
-  new shape until every writing member of every interface it implements has
-  been tried.
+  lookup convenience; `MaxFileCountFor` is the lookup. `PickedFile.Bytes` was
+  a public `byte[]`, writable in place under every holder of the outcome; it
+  is an `ImmutableArray<byte>` now. `OpenRead()` is the per-pass stream that
+  `new MemoryStream(Bytes)` used to be, sharing the array without copying it.
+  So the stream is the one door left to that array: it must stay
+  `writable: false` with no public buffer, and a copy-free `AsImmutableArray`
+  wrap is only sound over an array nothing else holds (`BufferFilesAsync`'s
+  fresh `ToArray`). `ImmutableExposureAssert` is the shared test definition:
+  an exact-set pin on the implemented interfaces fails any new shape until
+  every writing member of every interface it implements has been tried.
 - **Suffix-disjoint extension keys are a constructed fact now.** The JS
   classifier takes the first suffix match; `FolderPickLimits`'s ctor rejects
   a key that is a suffix of another key (e.g. `.gz` alongside `.tar.gz`).

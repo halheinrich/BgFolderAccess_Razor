@@ -199,7 +199,7 @@ public class JsFolderAccessTests : BunitContext
         Assert.Equal("Corpus", outcome.DirectoryName);
         var file = Assert.Single(outcome.Files);
         Assert.Equal("match.xg", file.FileName); // extension-bearing name preserved
-        Assert.Equal([1, 2, 3], file.Bytes);
+        Assert.Equal<byte>([1, 2, 3], file.Bytes);
     }
 
     [Fact]

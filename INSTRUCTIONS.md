@@ -268,8 +268,8 @@ in, so the host's source collection cannot reach it afterwards.
 
 ```csharp
 sealed record FolderPickOutcome(
-    bool Cancelled, string DirectoryName, IReadOnlyList<PickedFile> Files,
-    FolderWriteCapability Capability, IReadOnlyList<PickTruncation> Truncations)
+    bool Cancelled, string DirectoryName, ImmutableArray<PickedFile> Files,
+    FolderWriteCapability Capability, ImmutableArray<PickTruncation> Truncations)
 { static FolderPickOutcome CancelledOutcome { get; } }
 
 sealed record PickedFile(string FileName, ImmutableArray<byte> Bytes)  // name keeps its extension
@@ -344,7 +344,11 @@ it re-opens a closed trap.
   So the stream is the one door left to that array: it must stay
   `writable: false` with no public buffer, and a copy-free `AsImmutableArray`
   wrap is only sound over an array nothing else holds (`BufferFilesAsync`'s
-  fresh `ToArray`). `ImmutableExposureAssert` is the shared test definition:
+  fresh `ToArray`). `FolderPickOutcome.Files` was the `List` that
+  `BufferFilesAsync` filled, handed out behind `IReadOnlyList`. `Files` and
+  `Truncations` are `ImmutableArray`s now, so the record's own type makes the
+  promise and no construction site has to remember it.
+  `ImmutableExposureAssert` is the shared test definition:
   an exact-set pin on the implemented interfaces fails any new shape until
   every writing member of every interface it implements has been tried.
 - **Suffix-disjoint extension keys are a constructed fact now.** The JS

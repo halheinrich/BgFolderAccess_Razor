@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace BgFolderAccess_Razor;
 
 /// <summary>
@@ -30,6 +32,18 @@ namespace BgFolderAccess_Razor;
 /// Files still arrive in folder-enumeration order, and a folder that fit every
 /// cap is entirely unaffected. See <see cref="PickTruncation"/>.
 /// </para>
+///
+/// <para>
+/// <b>Immutable all the way down</b> (halheinrich/backgammon#273).
+/// <see cref="Files"/> and <see cref="Truncations"/> are
+/// <see cref="ImmutableArray{T}"/>s, so the type itself guarantees what a
+/// read-only interface only suggested. The library once built
+/// <see cref="Files"/> as a <c>List</c> behind <c>IReadOnlyList</c>, and a
+/// cast rewrote the pick under every other holder of the outcome. Every
+/// writing member of every interface the arrays implement throws
+/// <see cref="NotSupportedException"/>, and no caller, host-side test fakes
+/// included, can construct an outcome over a collection it keeps writing to.
+/// </para>
 /// </summary>
 /// <param name="Cancelled">True when the pick ended holding no folder — see the type remarks.</param>
 /// <param name="DirectoryName">The picked folder's leaf name (empty when cancelled).</param>
@@ -45,9 +59,9 @@ namespace BgFolderAccess_Razor;
 public sealed record FolderPickOutcome(
     bool Cancelled,
     string DirectoryName,
-    IReadOnlyList<PickedFile> Files,
+    ImmutableArray<PickedFile> Files,
     FolderWriteCapability Capability,
-    IReadOnlyList<PickTruncation> Truncations)
+    ImmutableArray<PickTruncation> Truncations)
 {
     /// <summary>
     /// The single cancelled outcome — no folder, no files, no capability claim

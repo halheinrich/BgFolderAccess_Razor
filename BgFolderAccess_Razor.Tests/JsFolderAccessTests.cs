@@ -316,6 +316,68 @@ public class JsFolderAccessTests : BunitContext
     }
 
     [Fact]
+    public async Task PickFolder_OutcomeCollections_RefuseEveryWrite_AndReadTheSame()
+    {
+        // The regression this pins (halheinrich/backgammon#273): the pick's
+        // files used to be the List this seam buffered into, handed out behind
+        // IReadOnlyList — a cast added, removed or replaced files under every
+        // other holder of the outcome. Both of the outcome's collections are
+        // tried through every interface they implement.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupBeginPick(module, "ok", "Huge", true);
+        SetupEnumerate(
+            module,
+            [new JsFolderAccess.JsPickedFile("kept.xg", 1)],
+            [new JsFolderAccess.JsOmittedFiles(".xgp", 340)]);
+        module.Setup<IJSStreamReference>("readFileData", inv => true)
+            .SetResult(new FakeJsStreamReference([1]));
+        var sut = CreateSut();
+
+        var outcome = await sut.PickFolderAsync(NoHook);
+
+        AssertOutcomeCollectionsRefuseEveryWrite(outcome, keptFile: "kept.xg", truncatedKind: ".xgp");
+    }
+
+    [Fact]
+    public async Task CollectFallback_OutcomeCollections_RefuseEveryWrite_AndReadTheSame()
+    {
+        // The fallback builds its outcome through the same two mappings; pinned
+        // separately so a mechanism that grew its own construction path could
+        // not quietly hand out a mutable list again.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupCollectFallback(
+            module, "Huge",
+            [new JsFolderAccess.JsPickedFile("kept.xg", 1)],
+            [new JsFolderAccess.JsOmittedFiles(".xgp", 7)]);
+        module.Setup<IJSStreamReference>("readFileData", inv => true)
+            .SetResult(new FakeJsStreamReference([1]));
+        var sut = CreateSut();
+
+        var outcome = await sut.CollectFallbackAsync(default);
+
+        AssertOutcomeCollectionsRefuseEveryWrite(outcome, keptFile: "kept.xg", truncatedKind: ".xgp");
+    }
+
+    /// <summary>
+    /// Every write to either of <paramref name="outcome"/>'s collections is
+    /// refused, and afterwards each still holds exactly the one entry the pick
+    /// produced.
+    /// </summary>
+    private static void AssertOutcomeCollectionsRefuseEveryWrite(
+        FolderPickOutcome outcome, string keptFile, string truncatedKind)
+    {
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(outcome.Files);
+        ImmutableExposureAssert.AssertEveryWriteRefused(
+            outcome.Files, new PickedFile("intruder.xg", [0]));
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickTruncation>(outcome.Truncations);
+        ImmutableExposureAssert.AssertEveryWriteRefused(
+            outcome.Truncations, new PickTruncation(".xg", OmittedCount: 1, MaxFileCount: 1));
+
+        Assert.Equal(keptFile, Assert.Single(outcome.Files).FileName);
+        Assert.Equal(truncatedKind, Assert.Single(outcome.Truncations).Extension);
+    }
+
+    [Fact]
     public async Task PickFolder_WithinTheCounts_ReportsNoTruncation()
     {
         // The other half of the contract: a folder that fit says so, so a

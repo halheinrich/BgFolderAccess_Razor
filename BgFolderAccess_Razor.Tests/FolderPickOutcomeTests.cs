@@ -21,6 +21,20 @@ public class FolderPickOutcomeTests
     }
 
     [Fact]
+    public void Outcome_Collections_ImplementExactlyTheInterfacesTheWriteTestCovers()
+    {
+        // The records' collection members are the type-level guarantee; the
+        // write refusals themselves are pinned where the library builds real
+        // outcomes (JsFolderAccessTests), which is where the List leaked.
+        var outcome = new FolderPickOutcome(
+            Cancelled: false, "Corpus", [new PickedFile("a.xg", [1])], FolderWriteCapability.Enabled,
+            [new PickTruncation(".xg", OmittedCount: 1, MaxFileCount: 1)]);
+
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(outcome.Files);
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickTruncation>(outcome.Truncations);
+    }
+
+    [Fact]
     public void PickTruncation_ComparesByValue()
     {
         Assert.Equal(

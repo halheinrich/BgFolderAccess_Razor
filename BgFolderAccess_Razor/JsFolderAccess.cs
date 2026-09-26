@@ -235,7 +235,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     /// reported truncation, and where its cap figure is derived from the
     /// enforced table rather than trusted off the wire.
     /// </summary>
-    private IReadOnlyList<PickTruncation> ToTruncations(JsOmittedFiles[] omitted) =>
+    private ImmutableArray<PickTruncation> ToTruncations(JsOmittedFiles[] omitted) =>
         [.. omitted.Select(o => new PickTruncation(o.Extension, o.OmittedCount, _limits.MaxFileCountFor(o.Extension)))];
 
     /// <inheritdoc/>
@@ -324,7 +324,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     /// oversized file fails fast before any transfer starts. The count caps have
     /// already been applied JS-side — what arrives here is what the pick took.
     /// </summary>
-    private async Task<IReadOnlyList<PickedFile>> BufferFilesAsync(
+    private async Task<ImmutableArray<PickedFile>> BufferFilesAsync(
         IJSObjectReference module, JsPickedFile[] metadata)
     {
         foreach (var file in metadata)
@@ -336,7 +336,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
             }
         }
 
-        var picked = new List<PickedFile>(metadata.Length);
+        var picked = ImmutableArray.CreateBuilder<PickedFile>(metadata.Length);
         foreach (var file in metadata)
         {
             // Stream the bytes rather than marshaling one giant byte[] result:
@@ -356,7 +356,9 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
                 file.Name, ImmutableCollectionsMarshal.AsImmutableArray(ms.ToArray())));
         }
 
-        return picked;
+        // One slot per metadata entry, all filled: the builder's array becomes
+        // the outcome's without a copy, and the builder keeps none of it.
+        return picked.MoveToImmutable();
     }
 
     /// <inheritdoc/>

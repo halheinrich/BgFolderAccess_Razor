@@ -139,13 +139,16 @@ public class FolderAccessSamplingTests
     {
         var result = new FolderAccessModuleHost().Pick(
             mechanism,
-            ["a.xgp", "b.xg", "c.xgp", "d.xg", "e.xgp"],
-            (".xg", 1),
-            (".xgp", 2));
+            ["a.xg", "b.xgp", "c.xg", "d.xgp", "e.xgp"],
+            (".xgp", 2),
+            (".xg", 1));
 
         // The report reads in table order, not in the order the folder happened
         // to hit each cap — a multi-line host notice has to be deterministic.
-        Assert.Equal([".xg", ".xgp"], [.. result.Omitted.Select(kind => kind.Extension)]);
+        // The table is deliberately in neither ordinal nor encounter order (the
+        // folder meets .xg first), so only the table's own order passes: this
+        // is what pins the wire builder the host now shares with production.
+        Assert.Equal([".xgp", ".xg"], [.. result.Omitted.Select(kind => kind.Extension)]);
         Assert.Equal([1, 1], [.. result.Omitted.Select(kind => kind.OmittedCount)]);
     }
 

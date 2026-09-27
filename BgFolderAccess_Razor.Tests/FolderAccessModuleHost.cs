@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using Jint;
 using Jint.Native;
 
@@ -100,18 +99,26 @@ public sealed class FolderAccessModuleHost
     /// <summary>
     /// Pick a folder whose top-level files are <paramref name="fileNames"/>, in
     /// that order, against <paramref name="caps"/> — the per-extension count-cap
-    /// table in the shape <see cref="FolderPickLimits.MaxFileCounts"/> reaches
-    /// the module in, <b>including its key order</b>, which the left-behind
-    /// report is required to read in.
+    /// table, <b>in its key order</b>, which the left-behind report is required
+    /// to read in.
+    ///
+    /// <para>
+    /// The caps reach the module through production's own path: validated by
+    /// <see cref="FolderPickLimits"/>, then written by
+    /// <see cref="JsFolderAccess.ToWireCaps"/> — the object the real interop
+    /// wire carries, not a second encoding of it built here. A change to the
+    /// wire builder is therefore a change to what these tests run, and a table
+    /// the constructor would refuse cannot reach the module at all.
+    /// </para>
     /// </summary>
     public PickResult Pick(
         Mechanism mechanism, string[] fileNames, params (string Extension, int Cap)[] caps)
     {
-        var limits = new JsonObject();
-        foreach (var (extension, cap) in caps)
-        {
-            limits[extension] = cap;
-        }
+        // The byte cap never reaches the module (JsFolderAccess enforces it on
+        // the C# side); the constructor needs one, and this one constrains nothing.
+        var limits = new FolderPickLimits(
+            caps.Select(c => KeyValuePair.Create(c.Extension, c.Cap)), maxFileBytes: long.MaxValue);
+        var wireCaps = JsFolderAccess.ToWireCaps(limits).GetRawText();
 
         var entryPoint = mechanism switch
         {
@@ -123,7 +130,7 @@ public sealed class FolderAccessModuleHost
         // The argument array is spelled out rather than left to `params`: the
         // overload that also takes a `this` value is otherwise not the one C#
         // picks, and the arguments silently shift by one.
-        JsValue[] arguments = [JsonSerializer.Serialize(fileNames), limits.ToJsonString()];
+        JsValue[] arguments = [JsonSerializer.Serialize(fileNames), wireCaps];
 
         // enumerateJson is async; collectFallbackJson is not. Unwrapping covers
         // both — a non-promise passes straight through.

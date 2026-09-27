@@ -6,8 +6,8 @@
 // The boundary is deliberately FLAT: names in as JSON, results out as JSON. A
 // JS engine's object graph is awkward to assert against from C#, and the caps
 // table has to arrive as a plain object with ordered string keys (which is
-// exactly what JSON.parse gives) — the same shape FolderPickLimits.MaxFileCounts
-// serializes to on the real interop wire.
+// exactly what JSON.parse gives). FolderAccessModuleHost hands in the JSON text
+// of the very object JsFolderAccess.ToWireCaps writes for the real interop wire.
 //
 // Every fake here is duck-typed to precisely what the module touches. No
 // browser is involved and none is needed: the count-cap rule reads names, and

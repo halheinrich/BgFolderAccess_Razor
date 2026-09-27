@@ -55,7 +55,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     {
         _js = js ?? throw new ArgumentNullException(nameof(js));
         _limits = limits ?? throw new ArgumentNullException(nameof(limits));
-        _wireCaps = ToWireCaps(limits.MaxFileCounts);
+        _wireCaps = ToWireCaps(limits);
     }
 
     /// <summary>
@@ -79,14 +79,23 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     /// a reply: a framework type the JS runtime writes with its own converter
     /// and nothing of this assembly's.
     /// </para>
+    ///
+    /// <para>
+    /// <b>Internal, for one reader.</b> The JS-engine suite
+    /// (<c>FolderAccessModuleHost</c>) hands the shipped module exactly this
+    /// object, so it runs the wire this type sends rather than a second
+    /// encoding of it. It takes the whole <see cref="FolderPickLimits"/>, not
+    /// its array, so no wire object can be derived from a table the
+    /// constructor has not validated.
+    /// </para>
     /// </summary>
-    private static JsonElement ToWireCaps(ImmutableArray<KeyValuePair<string, int>> caps)
+    internal static JsonElement ToWireCaps(FolderPickLimits limits)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            foreach (var (extension, cap) in caps)
+            foreach (var (extension, cap) in limits.MaxFileCounts)
             {
                 writer.WriteNumber(extension, cap);
             }

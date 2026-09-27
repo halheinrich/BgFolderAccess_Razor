@@ -112,7 +112,9 @@ library ships **no numbers** — each host's values encode its own cost model
   files, and how many of each to take — and keeps no copy (SSOT). It crosses
   as one JSON object that `JsFolderAccess.ToWireCaps` writes, members in the
   table's order, so the module's `Object.keys` order (and with it the
-  left-behind report's order) is the host's.
+  left-behind report's order) is the host's. The Jint suite hands the module
+  that same object (`FolderAccessModuleHost` calls `ToWireCaps`), so it runs
+  the wire production sends, not a second encoding of it.
 - **Count caps truncate, never fail**, per extension independently, in the JS
   module (the only place an extension is known before transfer). What was left
   behind rides back as `FolderPickOutcome.Truncations`.
@@ -280,7 +282,10 @@ enum PickedFileWritability { Absent, Writable, NotWritable }        // one named
 ```
 
 Host tests fake `IFolderAccess` and construct outcomes directly — the records
-are public and value-equal for exactly that.
+are public for exactly that. Only `PickTruncation` is value-equal: `PickedFile`
+and `FolderPickOutcome` compare their arrays by reference, so a test compares
+their members. The array members refuse a `default` array at construction and
+in `with` (`ArgumentException` naming the member); "none" is an empty `[]`.
 
 ## Pitfalls
 

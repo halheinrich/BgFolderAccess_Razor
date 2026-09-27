@@ -43,6 +43,8 @@ namespace BgFolderAccess_Razor;
 /// writing member of every interface the arrays implement throws
 /// <see cref="NotSupportedException"/>, and no caller, host-side test fakes
 /// included, can construct an outcome over a collection it keeps writing to.
+/// Nor over a <c>default</c> array: the constructor and <c>with</c> refuse one
+/// for either member (see <see cref="Files"/>).
 /// </para>
 /// </summary>
 /// <param name="Cancelled">True when the pick ended holding no folder — see the type remarks.</param>
@@ -63,6 +65,29 @@ public sealed record FolderPickOutcome(
     FolderWriteCapability Capability,
     ImmutableArray<PickTruncation> Truncations)
 {
+    /// <summary>
+    /// Top-level matching files, buffered (empty when cancelled). Never a
+    /// <c>default</c> array: the constructor and <c>with</c> both refuse one
+    /// with an <see cref="ArgumentException"/> naming this member.
+    /// </summary>
+    public ImmutableArray<PickedFile> Files
+    {
+        get;
+        init => field = ImmutableArrayArgument.RequireNotDefault(value, nameof(Files));
+    } = ImmutableArrayArgument.RequireNotDefault(Files, nameof(Files));
+
+    /// <summary>
+    /// The matching-file kinds a count cap cut short, empty when the folder
+    /// fit — see the constructor parameter. Never a <c>default</c> array: the
+    /// constructor and <c>with</c> both refuse one with an
+    /// <see cref="ArgumentException"/> naming this member.
+    /// </summary>
+    public ImmutableArray<PickTruncation> Truncations
+    {
+        get;
+        init => field = ImmutableArrayArgument.RequireNotDefault(value, nameof(Truncations));
+    } = ImmutableArrayArgument.RequireNotDefault(Truncations, nameof(Truncations));
+
     /// <summary>
     /// The single cancelled outcome — no folder, no files, no capability claim
     /// (the <see cref="FolderWriteCapability.BrowserUnsupported"/> it carries is

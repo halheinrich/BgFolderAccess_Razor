@@ -466,6 +466,17 @@ it re-opens a closed trap.
 - **Dispose tolerates `JSDisconnectedException`** (tab close / reload tears
   the runtime down before the module reference releases). Keep the catch;
   removing it turns every tab close into an unhandled exception.
+- **Dispose every `IJSStreamReference`, not only the stream opened from it.**
+  The runtime keeps each returned buffer in its JS object table until the
+  reference's `DisposeAsync` removes it, and the stream does not dispose its
+  reference (dotnet/aspnetcore v10.0.12: `Microsoft.JSInterop.ts`
+  `createJSStreamReference`, `JSObjectReference.DisposeAsync`,
+  `PullFromJSDataStream`). `BufferFilesAsync` declares the reference with
+  `await using`, so it is released after the copy and on any failure to open
+  or copy. Dropping that leaks every buffered file's bytes for the life of the
+  tab — a whole sample per resample. The `BufferedFile_StreamReferenceIsReleased_*`
+  seam tests pin all three exits, counting disposal on a fake that, like the
+  runtime's reference, is released by nothing else.
 - **The draw sits BETWEEN the walk and the stats — don't fold it back in.**
   `drawPicked` classifies and collects by name (free), draws each kind's
   survivors, and only then calls `getFile()`, so a ten-thousand-file folder

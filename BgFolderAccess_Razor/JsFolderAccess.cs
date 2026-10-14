@@ -438,7 +438,18 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
             // Stream the bytes rather than marshaling one giant byte[] result:
             // IJSStreamReference is the supported large-payload path, and its
             // maxAllowedSize re-asserts the byte cap on what actually crosses.
-            var streamRef = await module.InvokeAsync<IJSStreamReference>("readFileData", file.Name);
+            //
+            // THE REFERENCE IS DISPOSED, not just the stream opened from it.
+            // The runtime keeps the file's buffer in its JS object table until
+            // the reference's DisposeAsync removes it (Microsoft.JSInterop.ts,
+            // createJSStreamReference; JSObjectReference.DisposeAsync), and the
+            // stream does not dispose the reference (PullFromJSDataStream;
+            // dotnet/aspnetcore v10.0.12). Left to the stream alone, every
+            // buffered file stayed rooted in the browser for the life of the
+            // tab, and every resample added a sample's worth. `await using`
+            // releases it once the copy is done, and on any failure to open or
+            // copy; declared first, it is released last, after the stream.
+            await using var streamRef = await module.InvokeAsync<IJSStreamReference>("readFileData", file.Name);
             await using var stream = await streamRef.OpenReadStreamAsync(
                 maxAllowedSize: _limits.MaxFileBytes);
             using var ms = new MemoryStream();

@@ -42,16 +42,123 @@ public class JsFolderAccessTests : BunitContext
         new Dictionary<string, int> { [".xg"] = 3, [".xgp"] = 5 },
         maxFileBytes: 2L * 1024 * 1024);
 
-    /// <summary>Minimal <see cref="IJSStreamReference"/> over in-memory bytes.</summary>
+    /// <summary>
+    /// An <see cref="IJSStreamReference"/> over in-memory bytes that behaves as
+    /// the runtime's <c>JSStreamReference</c> does where the seam depends on
+    /// it, and records what the seam does with it.
+    ///
+    /// <para>
+    /// As in the runtime (dotnet/aspnetcore v10.0.12,
+    /// <c>src/JSInterop/Microsoft.JSInterop/src/Implementation/JSStreamReference.cs</c>,
+    /// lines 36–39), <see cref="OpenReadStreamAsync"/> refuses a
+    /// <see cref="Length"/> past <c>maxAllowedSize</c> with an
+    /// <see cref="ArgumentOutOfRangeException"/> naming that parameter. And as
+    /// there (<c>JSObjectReference.cs</c>, lines 101–108), only
+    /// <see cref="DisposeAsync"/> releases the reference: the stream it opens
+    /// does not, which is why <see cref="DisposeCount"/> is what tells a leak
+    /// from a release.
+    /// </para>
+    /// </summary>
     private sealed class FakeJsStreamReference(byte[] bytes) : IJSStreamReference
     {
-        public long Length => bytes.Length;
+        /// <summary>The length the reference reports; the bytes' own by default.</summary>
+        public long Length { get; init; } = bytes.Length;
+
+        /// <summary>When set, opening the stream fails with this.</summary>
+        public Exception? OpenFailure { get; init; }
+
+        /// <summary>When set, the opened stream hands over this many bytes and then fails.</summary>
+        public int? FailAfterBytes { get; init; }
+
+        /// <summary>How many times the reference was disposed.</summary>
+        public int DisposeCount { get; private set; }
+
+        /// <summary>The streams this reference opened, in order.</summary>
+        public List<TrackedStream> OpenedStreams { get; } = [];
 
         public ValueTask<Stream> OpenReadStreamAsync(
-            long maxAllowedSize = 512000, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<Stream>(new MemoryStream(bytes));
+            long maxAllowedSize = 512000, CancellationToken cancellationToken = default)
+        {
+            if (Length > maxAllowedSize)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxAllowedSize),
+                    $"The incoming data stream of length {Length} exceeds the maximum allowed length {maxAllowedSize}.");
+            }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+            if (OpenFailure is not null)
+            {
+                return ValueTask.FromException<Stream>(OpenFailure);
+            }
+
+            var stream = new TrackedStream(bytes, FailAfterBytes);
+            OpenedStreams.Add(stream);
+            return ValueTask.FromResult<Stream>(stream);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            DisposeCount++;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    /// <summary>
+    /// A read-only stream over <c>bytes</c> that records its own disposal and,
+    /// given <c>failAfterBytes</c>, breaks off with an <see cref="IOException"/>
+    /// once that many bytes are read — a transfer failing part-way. Not a
+    /// <see cref="MemoryStream"/>: that type copies its whole buffer in
+    /// <c>CopyToAsync</c> without reading, so it could not fail part-way.
+    /// </summary>
+    private sealed class TrackedStream(byte[] bytes, int? failAfterBytes) : Stream
+    {
+        private int _position;
+
+        public bool Disposed { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => bytes.Length;
+
+        public override long Position
+        {
+            get => _position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var limit = failAfterBytes ?? bytes.Length;
+            if (_position >= limit && _position < bytes.Length)
+            {
+                throw new IOException("The transfer broke off part-way.");
+            }
+
+            var read = Math.Min(count, limit - _position);
+            Array.Copy(bytes, _position, buffer, offset, read);
+            _position += read;
+            return read;
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
     }
 
     private JsFolderAccess CreateSut() => new(JSInterop.JSRuntime, Limits);
@@ -785,5 +892,92 @@ public class JsFolderAccessTests : BunitContext
         Assert.Equal<byte>([2], sample.Files[1].Bytes);
         Assert.Equal("{}", await sut.ReadPickedFileAsync("setup.json"));
         Assert.Equal(PickedFileWritability.Writable, await sut.ProbePickedFileWritabilityAsync("setup.json"));
+    }
+
+    // Every buffered file's IJSStreamReference is released. The runtime keeps
+    // each returned buffer in its JS object table until the reference is
+    // disposed (Microsoft.JSInterop.ts, createJSStreamReference and
+    // disposeJSObjectReferenceById, dotnet/aspnetcore v10.0.12), and the stream
+    // opened from it does not dispose it — so an undisposed reference keeps a
+    // whole file's bytes alive in the browser for the life of the tab, and a
+    // resample adds a whole sample's worth each time.
+
+    /// <summary>Script one file's draw and its byte read, for the release tests.</summary>
+    private static FakeJsStreamReference SetupOneFileRead(BunitJSModuleInterop module, FakeJsStreamReference read)
+    {
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xg", 3));
+        module.Setup<IJSStreamReference>("readFileData", _ => true).SetResult(read);
+        return read;
+    }
+
+    [Theory]
+    [InlineData("pick")]
+    [InlineData("fallback")]
+    [InlineData("resample")]
+    public async Task BufferedFile_StreamReferenceIsReleased_OnceItsBytesAreCopied(string operation)
+    {
+        // The one buffering path, through each of the three operations that
+        // reach it: the reference is disposed exactly once, after the copy,
+        // and the stream it opened is disposed too.
+        var module = JSInterop.SetupModule(ModulePath);
+        var read = new FakeJsStreamReference([1, 2, 3]);
+        switch (operation)
+        {
+            case "pick":
+                SetupBeginPick(module, "ok", "Corpus", true);
+                SetupOneFileRead(module, read);
+                break;
+            case "fallback":
+                var file = new JsFolderAccess.JsPickedFile("a.xg", 3);
+                SetupCollectFallback(module, "Corpus", [file], WholeDraw(Limits, file));
+                module.Setup<IJSStreamReference>("readFileData", _ => true).SetResult(read);
+                break;
+            default:
+                SetupOneFileRead(module, read);
+                break;
+        }
+
+        var sut = CreateSut();
+
+        var sample = operation switch
+        {
+            "pick" => (await sut.PickFolderAsync(NoHook)).Sample,
+            "fallback" => (await sut.CollectFallbackAsync(default)).Sample,
+            _ => await sut.ResampleAsync(),
+        };
+
+        Assert.Equal<byte>([1, 2, 3], Assert.Single(sample.Files).Bytes);
+        Assert.Equal(1, read.DisposeCount);
+        Assert.True(Assert.Single(read.OpenedStreams).Disposed);
+    }
+
+    [Fact]
+    public async Task BufferedFile_StreamReferenceIsReleased_WhenOpeningTheStreamFails()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        var read = SetupOneFileRead(
+            module, new FakeJsStreamReference([1, 2, 3]) { OpenFailure = new JSException("The stream could not be opened.") });
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<JSException>(() => sut.ResampleAsync());
+
+        Assert.Equal(1, read.DisposeCount);
+        Assert.Empty(read.OpenedStreams);
+    }
+
+    [Fact]
+    public async Task BufferedFile_StreamReferenceIsReleased_WhenCopyingFailsPartWay()
+    {
+        // Two of the three bytes cross, then the transfer breaks off: the
+        // failure surfaces unchanged, and both the stream and the reference
+        // behind it are released.
+        var module = JSInterop.SetupModule(ModulePath);
+        var read = SetupOneFileRead(module, new FakeJsStreamReference([1, 2, 3]) { FailAfterBytes = 2 });
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<IOException>(() => sut.ResampleAsync());
+
+        Assert.Equal(1, read.DisposeCount);
+        Assert.True(Assert.Single(read.OpenedStreams).Disposed);
     }
 }

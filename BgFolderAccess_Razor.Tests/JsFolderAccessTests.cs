@@ -15,9 +15,11 @@ namespace BgFolderAccess_Razor.Tests;
 /// cancelled is a value not an exception, writable maps to capability, the
 /// byte cap fails the pick before bytes move, the per-extension count caps
 /// cross the wire and every kind's found and admitted counts cross back with
-/// the cap figure derived from the enforced table, the slot file I/O passes
-/// the caller's file name through, and the writability probe's three answers
-/// map one-to-one with anything else refused.
+/// the cap figure derived from the enforced table, a resample is that same
+/// draw alone (no picker, no permission request, the caller error when nothing
+/// is held, and no part of a sample when a read fails), the slot file I/O
+/// passes the caller's file name through, and the writability probe's three
+/// answers map one-to-one with anything else refused.
 ///
 /// <para>
 /// The module's replies are scripted the way they arrive: as the
@@ -89,40 +91,45 @@ public class JsFolderAccessTests : BunitContext
         ];
 
     /// <summary>
-    /// Script <c>enumeratePicked</c>'s reply — the app-work half — for a folder
-    /// within every one of <see cref="Limits"/>' caps.
+    /// Script <c>drawPicked</c>'s reply — the app-work half of every path —
+    /// for a folder within every one of <see cref="Limits"/>' caps.
     /// </summary>
-    private static void SetupEnumerate(BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
-        SetupEnumerate(module, files, WholeDraw(Limits, files));
+    private static void SetupDraw(BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
+        SetupDraw(module, files, WholeDraw(Limits, files));
 
     /// <summary>
-    /// Script <c>enumeratePicked</c>'s reply with the per-kind report given —
-    /// the module's account of what it found and admitted.
+    /// Script <c>drawPicked</c>'s reply with the per-kind report given — the
+    /// module's account of what it found and admitted.
     /// </summary>
-    private static void SetupEnumerate(
+    private static void SetupDraw(
         BunitJSModuleInterop module,
         JsFolderAccess.JsPickedFile[] files,
         JsFolderAccess.JsDrawnKind[] kinds) =>
+        SetupDrawReply(module, new JsFolderAccess.JsDraw("drawn", files, kinds));
+
+    /// <summary>Script <c>drawPicked</c>'s answer when the module holds no folder.</summary>
+    private static void SetupNoFolder(BunitJSModuleInterop module) =>
+        SetupDrawReply(module, new JsFolderAccess.JsDraw("noFolder", [], []));
+
+    private static void SetupDrawReply(BunitJSModuleInterop module, JsFolderAccess.JsDraw reply) =>
         // Matcher, not the argument-less overload: the call carries the caps
         // table, and an exact-argument setup would simply never match it.
-        module.Setup<JsonElement>("enumeratePicked", _ => true)
-            .SetResult(OnTheWire(
-                new JsFolderAccess.JsEnumerateResult(files, kinds),
-                BgFolderAccessJsonContext.Default.JsEnumerateResult));
+        module.Setup<JsonElement>("drawPicked", _ => true)
+            .SetResult(OnTheWire(reply, BgFolderAccessJsonContext.Default.JsDraw));
 
     /// <summary>
-    /// Script <c>collectFallbackFiles</c>'s reply — the fallback mechanism's
-    /// one-call pick, with the same matcher caveat as <c>enumeratePicked</c>.
+    /// Script the fallback mechanism's pick: <c>collectFallbackFiles</c>
+    /// answering the folder's name, then the draw that follows it.
     /// </summary>
     private static void SetupCollectFallback(
         BunitJSModuleInterop module,
         string directoryName,
         JsFolderAccess.JsPickedFile[] files,
-        JsFolderAccess.JsDrawnKind[] kinds) =>
-        module.Setup<JsonElement>("collectFallbackFiles", _ => true)
-            .SetResult(OnTheWire(
-                new JsFolderAccess.JsFallbackResult(directoryName, files, kinds),
-                BgFolderAccessJsonContext.Default.JsFallbackResult));
+        JsFolderAccess.JsDrawnKind[] kinds)
+    {
+        module.Setup<string?>("collectFallbackFiles", _ => true).SetResult(directoryName);
+        SetupDraw(module, files, kinds);
+    }
 
     /// <summary>
     /// <paramref name="actual"/> is the report <paramref name="expected"/>
@@ -167,8 +174,8 @@ public class JsFolderAccessTests : BunitContext
     public async Task PickFolder_Cancelled_NeverRunsTheAcceptedHook()
     {
         // No folder, no work — so nothing may raise a busy affordance for work
-        // that will not happen. (No enumeratePicked setup exists either: a pick
-        // that enumerated after a cancellation would fail this test loudly.)
+        // that will not happen. (No drawPicked setup exists either: a pick that
+        // drew after a cancellation would fail this test loudly.)
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "cancelled", "", false);
         var sut = CreateSut();
@@ -183,13 +190,13 @@ public class JsFolderAccessTests : BunitContext
     public async Task PickFolder_RunsTheAcceptedHook_AfterThePromptsAndBeforeTheScan()
     {
         // The seam the split exists for: the hook must land after beginPick (the
-        // browser is done asking) and before enumeratePicked (the app's work
-        // that leaves the user waiting). Pinned by call order, because that
+        // browser is done asking) and before drawPicked (the app's work that
+        // leaves the user waiting). Pinned by call order, because that
         // ordering — not the hook's existence — is what makes the busy state
         // both truthful and paintable.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(module);
+        SetupDraw(module, []);
         var sut = CreateSut();
 
         var hookRan = false;
@@ -199,12 +206,12 @@ public class JsFolderAccessTests : BunitContext
             // Asserted from inside the hook — the only place the "after the
             // prompts, before the scan" position is observable.
             Assert.Single(module.Invocations["beginPick"]);
-            Assert.Empty(module.Invocations["enumeratePicked"]);
+            Assert.Empty(module.Invocations["drawPicked"]);
             return Task.CompletedTask;
         });
 
         Assert.True(hookRan); // an unrun hook would vacuously pass the above
-        Assert.Single(module.Invocations["enumeratePicked"]);
+        Assert.Single(module.Invocations["drawPicked"]);
     }
 
     [Fact]
@@ -215,7 +222,7 @@ public class JsFolderAccessTests : BunitContext
         // the read-only rung, not a failure.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", writable: false);
-        SetupEnumerate(module, new JsFolderAccess.JsPickedFile("match.xg", 3));
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("match.xg", 3));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1, 2, 3]));
         var sut = CreateSut();
@@ -235,7 +242,7 @@ public class JsFolderAccessTests : BunitContext
     {
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", writable: true);
-        SetupEnumerate(module, new JsFolderAccess.JsPickedFile("a.xgp", 1));
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xgp", 1));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([7]));
         var sut = CreateSut();
@@ -277,12 +284,12 @@ public class JsFolderAccessTests : BunitContext
         // pairs below.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(module, [], WholeDraw(UnsortedLimits));
+        SetupDraw(module, [], WholeDraw(UnsortedLimits));
         var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.PickFolderAsync(NoHook);
 
-        AssertIsTheWireCaps(module.VerifyInvoke("enumeratePicked").Arguments[0]);
+        AssertIsTheWireCaps(module.VerifyInvoke("drawPicked").Arguments[0]);
     }
 
     [Fact]
@@ -297,7 +304,7 @@ public class JsFolderAccessTests : BunitContext
 
         await sut.CollectFallbackAsync(default);
 
-        AssertIsTheWireCaps(module.VerifyInvoke("collectFallbackFiles").Arguments[1]);
+        AssertIsTheWireCaps(module.VerifyInvoke("drawPicked").Arguments[0]);
     }
 
     /// <summary><paramref name="count"/> scripted files of <paramref name="extension"/>, one byte each.</summary>
@@ -312,7 +319,7 @@ public class JsFolderAccessTests : BunitContext
         // capped independently, so a mixed folder can be past both at once.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Huge", true);
-        SetupEnumerate(
+        SetupDraw(
             module,
             [.. FilesOf(".xg", 3), .. FilesOf(".xgp", 5)],
             [
@@ -345,7 +352,7 @@ public class JsFolderAccessTests : BunitContext
         // none of keeps its place.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(
+        SetupDraw(
             module,
             [.. FilesOf(".xgp", 5), .. FilesOf(".xg", 2)],
             [
@@ -375,7 +382,7 @@ public class JsFolderAccessTests : BunitContext
         // a transfer attempted before the check would fail differently.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(
+        SetupDraw(
             module,
             [new JsFolderAccess.JsPickedFile("a.xg", 1)],
             [
@@ -394,7 +401,7 @@ public class JsFolderAccessTests : BunitContext
         // missing kind is refused rather than read as "none found".
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(
+        SetupDraw(
             module,
             [new JsFolderAccess.JsPickedFile("a.xg", 1)],
             [new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 1, AdmittedCount: 1)]);
@@ -413,7 +420,7 @@ public class JsFolderAccessTests : BunitContext
         // tried through every interface they implement.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Huge", true);
-        SetupEnumerate(module, new JsFolderAccess.JsPickedFile("kept.xg", 1));
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("kept.xg", 1));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
         var sut = CreateSut();
@@ -468,7 +475,7 @@ public class JsFolderAccessTests : BunitContext
         // is reported too, at zero.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(module, new JsFolderAccess.JsPickedFile("match.xg", 1));
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("match.xg", 1));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
         var sut = CreateSut();
@@ -517,7 +524,7 @@ public class JsFolderAccessTests : BunitContext
         // the derived MB figure, so prose and enforced rule cannot drift.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(module,
+        SetupDraw(module,
             new JsFolderAccess.JsPickedFile("huge.xg", Limits.MaxFileBytes + 1));
         var sut = CreateSut();
 
@@ -625,5 +632,158 @@ public class JsFolderAccessTests : BunitContext
 
         await Assert.ThrowsAsync<ArgumentNullException>(() => sut.ProbePickedFileWritabilityAsync(null!));
         Assert.Empty(JSInterop.Invocations);
+    }
+
+    // Resample: the draw both pick paths end in, alone. The module's side —
+    // what it walks, and that a draw and its reads change none of its state —
+    // is pinned on the real module in FolderAccessResampleTests; these pin the
+    // C# mapping over scripted replies.
+
+    [Fact]
+    public async Task Resample_ReportsEveryKind_WithTheCapFromTheEnforcedTable()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDraw(
+            module,
+            [.. FilesOf(".xg", 3), .. FilesOf(".xgp", 2)],
+            [
+                new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 7, AdmittedCount: 3),
+                new JsFolderAccess.JsDrawnKind(".xgp", FoundCount: 2, AdmittedCount: 2),
+            ]);
+        module.Setup<IJSStreamReference>("readFileData", inv => true)
+            .SetResult(new FakeJsStreamReference([1]));
+        var sut = CreateSut();
+
+        var sample = await sut.ResampleAsync();
+
+        Assert.Equal(5, sample.Files.Length);
+        AssertKinds(
+            sample.Kinds,
+            new SampledKind(".xg", foundCount: 7, admittedCount: 3, maxFileCount: Limits.MaxFileCountFor(".xg")),
+            new SampledKind(".xgp", foundCount: 2, admittedCount: 2, maxFileCount: Limits.MaxFileCountFor(".xgp")));
+        Assert.False(sample.HoldsEveryMatchingFile);
+    }
+
+    [Fact]
+    public async Task Resample_PassesThePerExtensionCapsToTheModule_InTableOrder()
+    {
+        // The module keeps no copy of the table between a pick and a resample:
+        // the resample hands it down again, whole and in order.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDraw(module, [], WholeDraw(UnsortedLimits));
+        var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
+
+        await sut.ResampleAsync();
+
+        AssertIsTheWireCaps(module.VerifyInvoke("drawPicked").Arguments[0]);
+    }
+
+    [Fact]
+    public async Task Resample_CallsOnlyTheDrawAndTheByteReads()
+    {
+        // No picker, no permission request, no fallback collection: nothing a
+        // resample does can show the user a prompt. (The interop is strict, so
+        // an unscripted call would fail the test anyway; this states the set.)
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xg", 1));
+        module.Setup<IJSStreamReference>("readFileData", inv => true)
+            .SetResult(new FakeJsStreamReference([1]));
+        var sut = CreateSut();
+
+        await sut.ResampleAsync();
+
+        Assert.Equal(["drawPicked", "readFileData"], module.Invocations.Select(i => i.Identifier).Distinct().Order());
+    }
+
+    [Fact]
+    public async Task Resample_OversizedFile_FailsBeforeAnyByteTransfer()
+    {
+        // The pick's byte cap, by the pick's own code path: no readFileData
+        // setup exists, so a transfer attempted before the check would fail
+        // differently.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDraw(
+            module,
+            new JsFolderAccess.JsPickedFile("small.xg", 1),
+            new JsFolderAccess.JsPickedFile("huge.xg", Limits.MaxFileBytes + 1));
+        var sut = CreateSut();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ResampleAsync());
+        Assert.Contains("huge.xg", ex.Message);
+        Assert.Contains($"{Limits.MaxFileMegabytes} MB", ex.Message);
+    }
+
+    [Fact]
+    public async Task Resample_WithNoFolderHeld_IsACallerError()
+    {
+        // Nothing picked, or the pick cleared: the module answers "noFolder",
+        // and the seam turns it into the documented InvalidOperationException
+        // rather than an empty sample a caller might install.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupNoFolder(module);
+        var sut = CreateSut();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ResampleAsync());
+        Assert.Contains("No folder is held", ex.Message);
+        Assert.Empty(module.Invocations["readFileData"]);
+    }
+
+    [Fact]
+    public async Task PickFolder_FolderReleasedWhileTheHookRan_IsTheSameCallerError()
+    {
+        // The hook yields to the renderer, so a Clear can land inside it; the
+        // draw then finds nothing held, as documented on PickFolderAsync.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupBeginPick(module, "ok", "Corpus", true);
+        SetupNoFolder(module);
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.PickFolderAsync(NoHook));
+    }
+
+    [Fact]
+    public async Task Resample_AStatusTheModuleDoesNotShip_IsAWireContractViolation()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDrawReply(module, new JsFolderAccess.JsDraw("Drawn", [], WholeDraw(Limits)));
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<JsonException>(() => sut.ResampleAsync());
+    }
+
+    [Fact]
+    public async Task Resample_AReadFailingPartWayThroughBuffering_ReturnsNoPart_AndALaterResampleSucceeds()
+    {
+        // One file buffered, then the next file's read fails: the caller gets
+        // the exception and nothing else — no sample holding the first file —
+        // and the seam keeps nothing that stops the next resample. (That the
+        // module's own state survives is pinned on the real module, in
+        // FolderAccessResampleTests; here the replies are scripted.)
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDraw(
+            module,
+            new JsFolderAccess.JsPickedFile("a.xg", 1),
+            new JsFolderAccess.JsPickedFile("b.xg", 1));
+        module.Setup<IJSStreamReference>("readFileData", inv => Equals(inv.Arguments[0], "a.xg"))
+            .SetResult(new FakeJsStreamReference([1]));
+        var bRead = module.Setup<IJSStreamReference>("readFileData", inv => Equals(inv.Arguments[0], "b.xg"));
+        bRead.SetException(new JSException("'b.xg' could not be read."));
+        module.Setup<string?>("readPickedFile", _ => true).SetResult("{}");
+        module.Setup<string?>("probePickedFileWritability", _ => true).SetResult("writable");
+        var sut = CreateSut();
+
+        FolderSample? partial = null;
+        await Assert.ThrowsAsync<JSException>(async () => partial = await sut.ResampleAsync());
+
+        Assert.Null(partial);
+        Assert.Equal(["a.xg", "b.xg"], module.Invocations["readFileData"].Select(i => i.Arguments[0]));
+
+        bRead.SetResult(new FakeJsStreamReference([2]));
+        var sample = await sut.ResampleAsync();
+
+        Assert.Equal(["a.xg", "b.xg"], sample.Files.Select(file => file.FileName));
+        Assert.Equal<byte>([2], sample.Files[1].Bytes);
+        Assert.Equal("{}", await sut.ReadPickedFileAsync("setup.json"));
+        Assert.Equal(PickedFileWritability.Writable, await sut.ProbePickedFileWritabilityAsync("setup.json"));
     }
 }

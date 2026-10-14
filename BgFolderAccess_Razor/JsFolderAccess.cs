@@ -113,9 +113,10 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     //
     // A WIRE DTO IS NEVER A TYPE ARGUMENT TO INTEROP. Each reply is taken back
     // as a JsonElement and read through BgFolderAccessJsonContext by
-    // InvokeDtoAsync below — the one spelling of the rule, which the three
-    // reply-returning calls use. InvokeAsync<T>'s trimmer annotation keeps T
-    // through a trim but not the records nested in T (halheinrich/backgammon#197:
+    // InvokeDtoAsync below — the one spelling of the rule, which the two
+    // DTO-returning calls (beginPick, drawPicked) use. InvokeAsync<T>'s
+    // trimmer annotation keeps T through a trim but not the records nested in
+    // T (halheinrich/backgammon#197:
     // BgQuiz's trimmed publish lost JsPickedFile's constructor that way, with
     // the analyzer silent because the call it inspects is annotated). The
     // context names the whole graph at compile time, so the trimmer has
@@ -124,20 +125,20 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     /// <summary>
     /// The first half of the pick as the JS module shapes it (camelCase on the
     /// wire): what the browser's prompts settled — cancelled or not, the folder
-    /// name, and whether write was granted. Carries no files; the enumeration
-    /// is the second call (see <see cref="PickFolderAsync"/>).
+    /// name, and whether write was granted. Carries no files; the draw is the
+    /// second call (see <see cref="PickFolderAsync"/>).
     /// </summary>
     internal sealed record JsPickStart(string Status, string DirectoryName, bool Writable);
 
     /// <summary>
-    /// The enumeration result: the picked folder's top-level matching files,
-    /// metadata only, already drawn down to the caps table this call passed in —
-    /// plus one <see cref="JsDrawnKind"/> per kind of that table.
+    /// One draw of the held folder, the reply to <c>drawPicked</c> on every
+    /// path — pick, fallback collection and resample alike. <see cref="Status"/>
+    /// is <c>"drawn"</c>, with the admitted files' metadata (drawn down to the
+    /// caps table the call passed in) and one <see cref="JsDrawnKind"/> per kind
+    /// of that table; or <c>"noFolder"</c>, with both arrays empty, when the
+    /// module held no folder to draw from.
     /// </summary>
-    internal sealed record JsEnumerateResult(JsPickedFile[] Files, JsDrawnKind[] Kinds);
-
-    /// <summary>The fallback-collection result — no status (nothing to cancel) and no writable claim.</summary>
-    internal sealed record JsFallbackResult(string DirectoryName, JsPickedFile[] Files, JsDrawnKind[] Kinds);
+    internal sealed record JsDraw(string Status, JsPickedFile[] Files, JsDrawnKind[] Kinds);
 
     /// <summary>One enumerated file's metadata, before its bytes are pulled.</summary>
     internal sealed record JsPickedFile(string Name, long Size);
@@ -184,12 +185,13 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     }
 
     /// <summary>
-    /// Two module calls behind one method, so the stateful half-picked slot the
-    /// split creates never escapes this type: <c>beginPick</c> runs the browser's
-    /// prompts, then — with <paramref name="onPickAccepted"/> awaited in
-    /// between, which is what lets a caller paint before the wait —
-    /// <c>enumeratePicked</c> lists the folder and its files are buffered across.
+    /// Two module calls behind one method: <c>beginPick</c> runs the browser's
+    /// prompts and binds the folder, then — with
+    /// <paramref name="onPickAccepted"/> awaited in between, which is what lets a
+    /// caller paint before the wait — <see cref="DrawSampleAsync"/> draws it and
+    /// buffers what it drew.
     /// </summary>
+    /// <inheritdoc/>
     public async Task<FolderPickOutcome> PickFolderAsync(Func<Task> onPickAccepted)
     {
         ArgumentNullException.ThrowIfNull(onPickAccepted);
@@ -206,14 +208,9 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         // below is the "no feedback" stretch the hook exists to cover.
         await onPickAccepted();
 
-        var enumerated = await InvokeDtoAsync(
-            module, "enumeratePicked", BgFolderAccessJsonContext.Default.JsEnumerateResult,
-            _wireCaps);
-        var kinds = ToKinds(enumerated.Kinds);
-        var files = await BufferFilesAsync(module, enumerated.Files);
+        var sample = await DrawSampleAsync(module);
         var capability = start.Writable ? FolderWriteCapability.Enabled : FolderWriteCapability.PermissionDenied;
-        return new FolderPickOutcome(
-            Cancelled: false, start.DirectoryName, capability, new FolderSample(files, kinds));
+        return new FolderPickOutcome(Cancelled: false, start.DirectoryName, capability, sample);
     }
 
     /// <inheritdoc/>
@@ -223,18 +220,74 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         await module.InvokeVoidAsync("clickElement", fallbackInput);
     }
 
+    /// <summary>
+    /// Two module calls, in the shape of <see cref="PickFolderAsync"/>'s:
+    /// <c>collectFallbackFiles</c> binds the folder the browser handed over and
+    /// answers its name, then <see cref="DrawSampleAsync"/> draws it.
+    /// </summary>
     /// <inheritdoc/>
+    /// <exception cref="JsonException">The module answered the collection with JSON <c>null</c>.</exception>
     public async Task<FolderPickOutcome> CollectFallbackAsync(ElementReference fallbackInput)
     {
         var module = await ModuleAsync();
-        var result = await InvokeDtoAsync(
-            module, "collectFallbackFiles", BgFolderAccessJsonContext.Default.JsFallbackResult,
-            fallbackInput, _wireCaps);
-        var kinds = ToKinds(result.Kinds);
-        var files = await BufferFilesAsync(module, result.Files);
+        var directoryName = await module.InvokeAsync<string?>("collectFallbackFiles", fallbackInput)
+            ?? throw new JsonException("'collectFallbackFiles' returned JSON null where a folder name was expected.");
+        var sample = await DrawSampleAsync(module);
         return new FolderPickOutcome(
-            Cancelled: false, result.DirectoryName, FolderWriteCapability.BrowserUnsupported,
-            new FolderSample(files, kinds));
+            Cancelled: false, directoryName, FolderWriteCapability.BrowserUnsupported, sample);
+    }
+
+    /// <summary>
+    /// One module call, the draw both pick paths end in, and nothing else: no
+    /// picker, no permission request, no busy hook.
+    /// </summary>
+    /// <inheritdoc/>
+    public async Task<FolderSample> ResampleAsync()
+    {
+        var module = await ModuleAsync();
+        return await DrawSampleAsync(module);
+    }
+
+    /// <summary>
+    /// Draw the held folder and buffer what the draw took: <c>drawPicked</c>
+    /// with the caps table, then the per-kind report mapped
+    /// (<see cref="ToKinds"/>), then every drawn file's bytes pulled across
+    /// (<see cref="BufferFilesAsync"/>). The one path from a held folder to a
+    /// <see cref="FolderSample"/>, so a pick, a fallback collection and a
+    /// resample share the draw, the byte cap and the buffering by construction.
+    ///
+    /// <para>
+    /// <b>All or nothing.</b> The sample is built only once every byte is in;
+    /// any failure on the way — the draw refused, the byte cap, a read — throws
+    /// out of here with nothing returned. Nothing is staged on either side to
+    /// undo: this type keeps no state of its own, and the module's draw and
+    /// reads change none of its state (see <c>drawPicked</c>).
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The module held no folder to draw from; or a drawn file is larger than
+    /// <see cref="FolderPickLimits.MaxFileBytes"/>.
+    /// </exception>
+    /// <exception cref="JsonException">The reply's status is not one the module ships.</exception>
+    private async Task<FolderSample> DrawSampleAsync(IJSObjectReference module)
+    {
+        var draw = await InvokeDtoAsync(
+            module, "drawPicked", BgFolderAccessJsonContext.Default.JsDraw, _wireCaps);
+        switch (draw.Status)
+        {
+            case "drawn":
+                break;
+            case "noFolder":
+                throw new InvalidOperationException(
+                    "No folder is held to draw from: none has been picked, or ClearPickedAsync released it.");
+            default:
+                throw new JsonException(
+                    $"'drawPicked' returned status '{draw.Status}', which is not one of the module's answers.");
+        }
+
+        var kinds = ToKinds(draw.Kinds);
+        var files = await BufferFilesAsync(module, draw.Files);
+        return new FolderSample(files, kinds);
     }
 
     /// <summary>

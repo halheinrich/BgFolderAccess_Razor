@@ -6,14 +6,16 @@ namespace BgFolderAccess_Razor;
 /// One draw of a folder's top-level matching files at the host's
 /// <see cref="FolderPickLimits"/>: the files it admitted, fully buffered, and
 /// its per-kind account of what it found and admitted. A pick hands one back
-/// inside its <see cref="FolderPickOutcome"/>.
+/// inside its <see cref="FolderPickOutcome"/>; <see cref="IFolderAccess.ResampleAsync"/>
+/// hands one back alone, drawn from the same held folder.
 ///
 /// <para>
 /// <b>Only the sample, nothing of the setup.</b> The folder's name and whether
 /// it can be written into belong to the pick that bound the folder
 /// (<see cref="FolderPickOutcome.DirectoryName"/>,
 /// <see cref="FolderPickOutcome.Capability"/>), not to a draw of it, so they
-/// are not here. A sample makes no claim about either.
+/// are not here. A sample makes no claim about either, which is what lets a
+/// resample, which asks the browser nothing, return one.
 /// </para>
 ///
 /// <para>

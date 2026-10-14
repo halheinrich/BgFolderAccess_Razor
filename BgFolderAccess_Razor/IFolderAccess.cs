@@ -25,6 +25,37 @@ using Microsoft.AspNetCore.Components;
 /// </para>
 ///
 /// <para>
+/// <b>The held folder.</b> The picked slot holds at most one folder, and
+/// <see cref="ResampleAsync"/> and the picked slot's named-file reads, writes
+/// and probe act on it. These transitions, and no others, change it:
+/// </para>
+/// <list type="bullet">
+/// <item><description>
+/// A File System Access pick (<see cref="PickFolderAsync"/>) replaces it once
+/// the browser's prompts settle with a folder — before the draw, so a pick that
+/// then fails (an oversized file, a refused read) still leaves the new folder
+/// held. A <i>cancelled</i> File System Access pick changes nothing: the
+/// previously held folder stays held.
+/// </description></item>
+/// <item><description>
+/// A fallback collection (<see cref="CollectFallbackAsync"/>) replaces it, an
+/// empty FileList included, and retains the folder's top-level files (as file
+/// references, never their bytes) as the candidates a resample redraws from.
+/// Opening the fallback picker (<see cref="TriggerFallbackPickerAsync"/>)
+/// changes nothing until the collection.
+/// </description></item>
+/// <item><description>
+/// <see cref="ClearPickedAsync"/> releases it, and with it the retained
+/// candidates; nothing is held afterwards.
+/// </description></item>
+/// </list>
+/// <para>
+/// A resample never changes it, whether it succeeds or fails, and nor does
+/// <see cref="PromoteToActiveAsync"/>, which copies the File System Access
+/// handle into the active slot and leaves the picked slot as it was.
+/// </para>
+///
+/// <para>
 /// <b>Error signaling.</b> Expected outcomes are values, never exceptions: a
 /// pick that ended with no folder — dismissed picker or declined read — is
 /// <see cref="FolderPickOutcome.Cancelled"/>, a write denial is
@@ -46,10 +77,11 @@ public interface IFolderAccess
 
     /// <summary>
     /// Run the File System Access pick: native directory picker, readwrite
-    /// permission request, top-level enumeration, and full buffering of every
-    /// matching file (the kinds the configured
-    /// <see cref="FolderPickLimits.MaxFileCounts"/> names). Call only when
-    /// <see cref="SupportsDirectoryPickerAsync"/> is true.
+    /// permission request, then a draw of the folder's top-level matching files
+    /// (the kinds the configured <see cref="FolderPickLimits.MaxFileCounts"/>
+    /// names, each up to its cap) and full buffering of what it drew. A
+    /// non-cancelled pick makes the folder the held one (see the type remarks).
+    /// Call only when <see cref="SupportsDirectoryPickerAsync"/> is true.
     /// </summary>
     /// <param name="onPickAccepted">
     /// Invoked — and awaited — once the browser has finished asking the user
@@ -64,10 +96,12 @@ public interface IFolderAccess
     /// <b>Not</b> invoked for a cancelled pick — there is no work to report.
     /// </param>
     /// <exception cref="InvalidOperationException">
-    /// A matching file is larger than the configured
+    /// A drawn file is larger than the configured
     /// <see cref="FolderPickLimits.MaxFileBytes"/>. A folder past the
     /// <i>count</i> caps does not throw — it truncates per kind and reports it
-    /// (<see cref="FolderSample.Kinds"/>).
+    /// (<see cref="FolderSample.Kinds"/>). Also thrown if
+    /// <see cref="ClearPickedAsync"/> released the folder while
+    /// <paramref name="onPickAccepted"/> was awaited, leaving nothing to draw.
     /// </exception>
     Task<FolderPickOutcome> PickFolderAsync(Func<Task> onPickAccepted);
 
@@ -80,21 +114,75 @@ public interface IFolderAccess
     Task TriggerFallbackPickerAsync(ElementReference fallbackInput);
 
     /// <summary>
-    /// Collect the fallback pick from the hidden input's FileList: filter to
-    /// top-level matching entries (by <c>webkitRelativePath</c> depth — the
-    /// browser hands over the whole tree) and buffer them. The outcome's
-    /// capability is always
+    /// Collect the fallback pick from the hidden input's FileList: make its
+    /// folder the held one, retaining its top-level files (by
+    /// <c>webkitRelativePath</c> depth — the browser hands over the whole tree)
+    /// as the candidates, then draw and buffer them exactly as the other
+    /// mechanism does — same module, same table, same draw, same per-kind
+    /// report. The outcome's capability is always
     /// <see cref="FolderWriteCapability.BrowserUnsupported"/>: this mechanism
     /// yields no writable handle. An empty FileList is a non-cancelled outcome
-    /// with zero files. The count caps apply here exactly as on the other
-    /// mechanism — same module, same table, same per-kind report.
+    /// with zero files.
     /// </summary>
     /// <exception cref="InvalidOperationException">
-    /// A matching file is larger than the configured
+    /// A drawn file is larger than the configured
     /// <see cref="FolderPickLimits.MaxFileBytes"/> (the count caps truncate
-    /// rather than throw — see <see cref="PickFolderAsync"/>).
+    /// rather than throw — see <see cref="PickFolderAsync"/>); or
+    /// <see cref="ClearPickedAsync"/> released the folder between the collection
+    /// and the draw.
     /// </exception>
     Task<FolderPickOutcome> CollectFallbackAsync(ElementReference fallbackInput);
+
+    /// <summary>
+    /// Draw the held folder again at the configured
+    /// <see cref="FolderPickLimits"/>, without the picker and without any
+    /// permission prompt or permission request, and return the new sample: its
+    /// files fully buffered and its per-kind report
+    /// (<see cref="FolderSample.Kinds"/>). The draw, the byte cap and the
+    /// buffering are the pick's own, implemented once: a kind over its cap is a
+    /// fresh uniform random draw, a kind within it is admitted whole again, and
+    /// the files read in folder order.
+    ///
+    /// <para>
+    /// <b>What is drawn.</b> After a File System Access pick, the held directory
+    /// is walked afresh, so files added or removed since the pick are seen.
+    /// After a fallback collection, the retained candidates are redrawn — the
+    /// folder as the browser handed it over, with nothing added since; a
+    /// retained file changed or removed on disk since may fail to read, which
+    /// fails the resample as any read does.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>What is held stays held</b>, whether the resample succeeds or fails:
+    /// the held folder (see the type remarks), the fallback's candidates, the
+    /// picked slot's named-file reads, writes and probe, and the active slot.
+    /// The write capability is not asked again, and the sample makes no claim
+    /// about it — the pick's <see cref="FolderPickOutcome.Capability"/> is the
+    /// only statement of it. A failure throws and returns no part of a sample;
+    /// nothing is left for the caller to repair, and a later resample can
+    /// succeed.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>No busy hook.</b> A resample shows no prompt, so all of it is the
+    /// app's own work: a host raises its busy affordance, and lets it paint,
+    /// <i>before</i> calling — unlike <see cref="PickFolderAsync"/>, whose
+    /// <c>onPickAccepted</c> exists because the prompts come first.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// No folder is held — never picked, or released by
+    /// <see cref="ClearPickedAsync"/> (see the type remarks). A caller error:
+    /// offer a resample only while a folder is held. Also thrown, as for a
+    /// pick, when a drawn file is larger than the configured
+    /// <see cref="FolderPickLimits.MaxFileBytes"/>, before any byte moves.
+    /// </exception>
+    /// <exception cref="Microsoft.JSInterop.JSException">
+    /// The walk was refused — the folder's permission withdrawn, or the folder
+    /// gone; a drawn file's bytes failed to read, part-way through buffering
+    /// included; or the browser failed in any other way.
+    /// </exception>
+    Task<FolderSample> ResampleAsync();
 
     /// <summary>
     /// Promote the picked slot's directory handle to the active slot. Returns

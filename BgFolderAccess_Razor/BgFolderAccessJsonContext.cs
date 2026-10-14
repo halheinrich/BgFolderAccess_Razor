@@ -4,10 +4,10 @@ namespace BgFolderAccess_Razor;
 
 /// <summary>
 /// The source-generated <see cref="JsonSerializerContext"/> for the values
-/// this library deserializes itself: the JS module's three replies —
-/// <see cref="JsFolderAccess.JsPickStart"/>, <see cref="JsFolderAccess.JsEnumerateResult"/>
-/// and <see cref="JsFolderAccess.JsFallbackResult"/> — with the arrays and
-/// nested records they carry following from those three roots. Trim-safe
+/// this library deserializes itself: the JS module's two structured replies —
+/// <see cref="JsFolderAccess.JsPickStart"/> and <see cref="JsFolderAccess.JsDraw"/>
+/// — with the arrays and nested records they carry following from those two
+/// roots. Trim-safe
 /// <c>System.Text.Json</c> metadata produced at compile time instead of by
 /// runtime reflection — the mould of XgFilter_Razor's
 /// <c>XgFilterRazorJsonContext</c> (halheinrich/backgammon#193), applied here
@@ -32,9 +32,10 @@ namespace BgFolderAccess_Razor;
 /// </para>
 ///
 /// <para>
-/// <b>What is declared, and why.</b> The three reply roots only. Everything
+/// <b>What is declared, and why.</b> The two reply roots only. Everything
 /// else that crosses interop is a framework type — <see cref="bool"/>,
-/// <see cref="string"/>, <c>IJSObjectReference</c>, <c>IJSStreamReference</c>
+/// <see cref="string"/> (the fallback collection's folder name among them),
+/// <c>IJSObjectReference</c>, <c>IJSStreamReference</c>
 /// — which the runtime's own converters and annotations cover; the arguments
 /// this library sends (the caps table, an element reference) are serialized
 /// by the runtime and are not this context's business.
@@ -71,8 +72,7 @@ namespace BgFolderAccess_Razor;
     GenerationMode = JsonSourceGenerationMode.Metadata,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(JsFolderAccess.JsPickStart))]
-[JsonSerializable(typeof(JsFolderAccess.JsEnumerateResult))]
-[JsonSerializable(typeof(JsFolderAccess.JsFallbackResult))]
+[JsonSerializable(typeof(JsFolderAccess.JsDraw))]
 internal sealed partial class BgFolderAccessJsonContext : JsonSerializerContext
 {
 }

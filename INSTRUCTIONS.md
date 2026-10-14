@@ -41,21 +41,25 @@ components. Three areas:
   posture for why a context, not the runtime's own deserializer).
 - **The pick's values** — `FolderPickOutcome`, the result of one pick
   gesture; `FolderSample`, one draw of the folder (its files and its
-  per-kind report); `PickedFile`, one buffered matching file; `SampledKind`,
-  one file kind's found and admitted counts; `FolderWriteCapability`, the pick-time
+  per-kind report), which a pick carries and a resample returns alone;
+  `PickedFile`, one buffered matching file; `SampledKind`, one file kind's
+  found and admitted counts; `FolderWriteCapability`, the pick-time
   write-capability taxonomy; `PickedFileWritability`, one named file's
   writability as the setup-time probe answers it; `FolderPickLimits`, the host-supplied caps
   configuration, validated at construction.
 - **The JS module** — `wwwroot/js/folderAccess.js`, the ES module shipped as
-  a static web asset: both pick mechanisms and the two-slot state, with
-  directory handles that never cross interop.
+  a static web asset: both pick mechanisms, the one draw they and Resample
+  share, and the two-slot state, with directory handles that never cross
+  interop.
 
 **`BgFolderAccess_Razor.Tests/`** — xUnit, in the two halves § Test posture
 describes. The C# half: the value types' contracts, the caps validation,
 and `JsFolderAccess`'s mapping over bUnit's scripted module. The JS half:
 `FolderAccessModuleHost` runs the shipped `folderAccess.js` in Jint through
-the test-side fakes in `js/moduleHarness.js`, and the sampling tests pin
-the count-cap draw as the module itself computes it.
+the stateful test-side fakes in `js/moduleHarness.js`; the sampling tests pin
+the count-cap draw as the module itself computes it, and the resample tests
+pin a second draw of the held folder and what the module holds across a
+failed one.
 
 ## Architecture
 
@@ -73,26 +77,33 @@ web asset (`./_content/BgFolderAccess_Razor/js/folderAccess.js`).
 ### Two pick mechanisms, one outcome shape
 
 - **File System Access** (`showDirectoryPicker`, Chromium): native picker →
-  readwrite permission request → top-level enumeration → full buffering.
-  Yields a directory handle, so named-file read/write works.
+  readwrite permission request → draw of the top-level files → full
+  buffering. Yields a directory handle, so named-file read/write works, and a
+  resample walks it afresh.
 - **`webkitdirectory` fallback** (everything else): a hidden `<input>`'s
-  native picker; the browser hands over the whole tree, the module keeps only
-  top-level matching files. No writable handle —
+  native picker; the browser hands over the whole tree once, the module
+  retains its top-level files as the folder's candidates, then draws from
+  them — as a resample later does again. No writable handle —
   `FolderWriteCapability.BrowserUnsupported` always.
 
-Both land in the same `FolderPickOutcome`; the capability and per-kind
-report contracts are identical across mechanisms (same module, same caps
-table).
+Both land in the same `FolderPickOutcome`, through the same draw
+(`drawPicked`, which `ResampleAsync` calls alone); the capability and
+per-kind report contracts are identical across mechanisms (same module,
+same caps table).
 `SupportsDirectoryPickerAsync` is probed per gesture, not at boot — capability
 is a property of the moment.
 
 ### Two-slot state model (in the JS module, never crossing interop)
 
-- **picked slot** — populated by a pick gesture; the directory handle
-  (FS-Access) or null (fallback) plus a name → handle/File map for byte reads.
-  Serves setup-time named documents (`ReadPickedFileAsync` /
-  `WritePickedFileAsync`), and answers whether one can be written before the
-  first write tries (`ProbePickedFileWritabilityAsync`).
+- **picked slot** — the **held folder**: the directory handle of a File
+  System Access pick, or the **retained candidates** of a fallback
+  collection (every top-level `File` the browser handed over, by name — file
+  references, never bytes; the draw classifies them against each call's caps
+  table, so nothing retained encodes the table). Every draw and every byte
+  read resolves against it. Serves setup-time named documents
+  (`ReadPickedFileAsync` / `WritePickedFileAsync`, File System Access only),
+  and answers whether one can be written before the first write tries
+  (`ProbePickedFileWritabilityAsync`).
 - **active slot** — bound only by `PromoteToActiveAsync()`; the folder a
   running session records through (`ReadActiveFileAsync` /
   `WriteActiveFileAsync`).
@@ -102,6 +113,18 @@ only the picked slot, so work bound to the active slot keeps its handle until
 the next promotion re-binds. Handles live in JS module state; C# sees names,
 sizes, bytes, and booleans.
 
+**What "held" means** is defined once, on `IFolderAccess`'s type remarks, and
+the module's three writers of the picked slot are its whole implementation:
+a File System Access pick replaces the held folder once its prompts settle
+with a folder (so a pick that then fails still leaves the new folder held); a
+cancelled one leaves it as it was; a fallback collection replaces it, an
+empty FileList included; `ClearPickedAsync` releases it with its candidates.
+Nothing else writes the slot — not a draw, not a byte read, not a resample
+that fails part-way. **The module records nothing between calls**: a draw
+returns names and sizes, and `readFileData` resolves each name against the
+held folder when the buffering pass asks for it, so there is no drawn-file
+map to leave half-replaced.
+
 ### Caps: host-owned numbers, library-owned enforcement
 
 `FolderPickLimits` (host-supplied, DI-registered, validated at construction)
@@ -109,7 +132,8 @@ carries the per-extension count-cap table and the per-file byte cap. The
 library ships **no numbers** — each host's values encode its own cost model
 (BgQuiz's `PickedFileLimits` stays host-side; Extract Web will bring its own).
 
-- The **whole count table crosses the interop boundary on every enumeration**;
+- The **whole count table crosses the interop boundary on every draw** — a
+  pick's, a fallback collection's, a resample's;
   the JS module derives both of its jobs from it — which names are matching
   files, and how many of each to take — and keeps no copy (SSOT). It crosses
   as one JSON object that `JsFolderAccess.ToWireCaps` writes, members in the
@@ -147,6 +171,17 @@ library ships **no numbers** — each host's values encode its own cost model
   report that is not one entry per table kind in the table's order
   (`JsonException`), and `SampledKind`'s constructor refuses counts no draw
   could produce.
+- **Resample** (`IFolderAccess.ResampleAsync`) draws the held folder again at
+  the same limits, with no picker and no permission prompt or request, and
+  returns a `FolderSample` — the files and the report, and nothing of the
+  setup: it makes no write-capability claim, since it never asks the browser
+  for one. It is `JsFolderAccess.DrawSampleAsync`, the very path both pick
+  mechanisms end in, called alone: one draw, one byte cap, one buffering
+  pass. All or nothing — a refused walk, the byte cap or a read failing
+  part-way through buffering throws and returns no part of a sample, and
+  leaves everything held as it was (see the two-slot model above), so a later
+  resample can succeed. No busy hook: the host raises its affordance before
+  calling.
 
 ### Error contract
 
@@ -154,8 +189,11 @@ Expected outcomes are values, never exceptions: a pick that ended with no
 folder is `FolderPickOutcome.Cancelled`, a write denial is
 `FolderWriteCapability.PermissionDenied`, a missing named file is a `null`
 read. Unexpected browser failures surface as `JSException` for hosts to catch
-and degrade on. The one deliberate throw is the byte-cap
-`InvalidOperationException` above.
+and degrade on. Two throws are deliberate, both `InvalidOperationException`:
+the byte cap above, and a draw with no folder held — the module answers
+`noFolder` and `DrawSampleAsync` throws, which is the caller error
+`ResampleAsync` documents (and what a pick throws if `ClearPickedAsync`
+released its folder while its hook was awaited).
 
 The writability probe (`ProbePickedFileWritabilityAsync`, halheinrich/backgammon#261)
 answers `PickedFileWritability` values the same way. A missing file is
@@ -213,7 +251,9 @@ It also **runs the shipped `folderAccess.js` itself**, in Jint, via
 `FolderAccessModuleHost` — the real file, staged beside the test assembly by
 the csproj so a rename breaks the build rather than a test. That covers the
 module's *logic*: classification, the per-kind random draw and its per-kind
-report, result ordering, and how many times a pick calls `getFile()`. It exists
+report, result ordering, how many times a draw calls `getFile()`, and — over
+the harness's stateful fake folder — what the picked and active slots hold
+across a pick, a resample, a refused walk, a failed read and a Clear. It exists
 because the draw is the library's one real algorithm and it is written in
 JavaScript; without an engine here it would first execute one repository away,
 in a consumer's browser suite.
@@ -250,6 +290,7 @@ ValueTask<bool> SupportsDirectoryPickerAsync();                  // per-gesture 
 Task<FolderPickOutcome> PickFolderAsync(Func<Task> onPickAccepted);
 Task TriggerFallbackPickerAsync(ElementReference fallbackInput);
 Task<FolderPickOutcome> CollectFallbackAsync(ElementReference fallbackInput);
+Task<FolderSample> ResampleAsync();                              // the held folder again; no prompt
 ValueTask<bool> PromoteToActiveAsync();                          // false = no-write signal
 Task<string?> ReadPickedFileAsync(string fileName);              // null = absent, not error
 Task WritePickedFileAsync(string fileName, string json);
@@ -260,9 +301,14 @@ ValueTask ClearPickedAsync();                                    // picked slot 
 ```
 
 `onPickAccepted` is awaited after the browser's prompts settle and before the
-enumeration/buffering — the host's one truthful place to raise a busy
-affordance (see Pitfalls). File-name constants stay host-side; the slot file
-I/O is name-parameterized by design.
+draw and buffering — the host's one truthful place to raise a busy
+affordance (see Pitfalls). `ResampleAsync` takes no hook: it shows no prompt,
+so the host raises its busy affordance before calling. It throws
+`InvalidOperationException` when no folder is held (a caller error) or a drawn
+file is over the byte cap, and `JSException` when the walk is refused or a
+read fails; either way it returns no part of a sample and leaves everything
+held as it was. File-name constants stay host-side; the slot file I/O is
+name-parameterized by design.
 
 ### `FolderPickLimits`
 
@@ -341,13 +387,16 @@ it re-opens a closed trap.
   Copy for the read-only degrade must not claim the user made a choice.
 - **The busy-affordance seam (`onPickAccepted`) has exactly one truthful
   raise point.** Everything in `beginPick` is the browser asking the user;
-  everything in `enumeratePicked` is the app working. The hook is awaited
+  everything in `drawPicked` is the app working. The hook is awaited
   between them: raised any earlier, a busy affordance would lie over a modal
   prompt; raised any later, it could never paint, because the scan that
   follows never yields to the renderer on WebAssembly's single thread. The
   hook is not invoked for a cancelled pick (no work to report). The seam
   ordering is pinned by test
   (`PickFolder_RunsTheAcceptedHook_AfterThePromptsAndBeforeTheScan`).
+  **Don't add a hook to `ResampleAsync`:** it has no prompt, so there is no
+  boundary for one to mark; the host raises and paints its affordance before
+  the call, which is the one truthful point there.
 - **The slot split is the isolation guarantee — don't "simplify" to one
   slot.** Clearing or re-picking touches only the picked slot; the active
   slot persists so work recording through it survives a mid-session Clear.
@@ -418,13 +467,39 @@ it re-opens a closed trap.
   the runtime down before the module reference releases). Keep the catch;
   removing it turns every tab close into an unhandled exception.
 - **The draw sits BETWEEN the walk and the stats — don't fold it back in.**
-  `enumeratePicked` classifies and collects by name (free), draws each kind's
+  `drawPicked` classifies and collects by name (free), draws each kind's
   survivors, and only then calls `getFile()`, so a ten-thousand-file folder
   still pays one stat per file it *takes*. A per-entry admission decision made
   on the way past cannot be a uniform draw — it does not yet know how many
   candidates are still coming — so re-fusing the two loops silently restores
   the first-N bug halheinrich/backgammon#106 closed.
-  `Enumeration_StatsOnlyTheFilesItTakes` is what guards the cost half.
+  `Enumeration_StatsOnlyTheFilesItTakes` and
+  `FileSystemAccessResample_StatsOnlyTheFilesItTakes` guard the cost half.
+- **One draw, and it records nothing — don't give Resample its own path, or
+  the module a drawn-file map.** Both pick mechanisms and `ResampleAsync`
+  end in `drawPicked` and `JsFolderAccess.DrawSampleAsync`; a second copy of
+  either is a second draw rule, byte cap or buffering pass to keep in step.
+  And `readFileData` resolves names against the held folder, not against a
+  map the draw left behind: such a map is state a failed buffering pass can
+  leave pointing at a sample nobody received, which is what made "a failed
+  resample changes nothing" a property to defend rather than a fact.
+- **Don't narrow the fallback's candidates.** They are every top-level file
+  the collection saw, not the pick's matches and never the pick's draw:
+  narrowing to the draw puts the excess out of every later resample's reach
+  (the halheinrich/backgammon#106 failure again, on the resample path), and narrowing to the
+  matches bakes the collection-time caps table into module state.
+  `RepeatedResamples_ReachEveryFileOfAnOverLimitKind` (fallback) and
+  `FallbackResample_ClassifiesTheCandidatesAgainstTheTableItIsHanded` guard
+  the two.
+- **A pick that fails after its prompts still leaves the new folder held.**
+  `beginPick` binds the folder before the draw, and `collectFallbackFiles`
+  before its draw, so an oversized file or a failed read throws out of the
+  pick with the module holding the folder the pick was for, not the one held
+  before. That is the documented "held" (see `IFolderAccess`); a host that
+  keeps its previous sample across a failed pick must not then resample, or
+  it draws a different folder from the one its sample came from — release
+  the folder (`ClearPickedAsync`) or treat the pick's failure as ending the
+  setup.
 - **Only one sampling test tells random from first-N.** Every other invariant
   in `FolderAccessSamplingTests` (`|admitted| = min(cap, matching)`, subset,
   per-kind independence, encounter order, report order) holds under *both*
@@ -434,8 +509,11 @@ it re-opens a closed trap.
   "the flaky-looking one": its stated failure odds are ~1e-10, and without it
   the change is untested. Equally, don't replace it with a "two picks differ"
   assertion — that one really is flaky (1-in-501 on BgQuiz's `.xg` cap).
+  `RepeatedResamples_ReachEveryFileOfAnOverLimitKind` in
+  `FolderAccessResampleTests` is the same property on the resample path, with
+  the same standing.
 - **bUnit test trap: scripted setups for calls that carry the caps table need
-  a matcher** (`Setup<T>("enumeratePicked", _ => true)`) — an argument-less
+  a matcher** (`Setup<T>("drawPicked", _ => true)`) — an argument-less
   exact setup never matches, and the resulting "no setup" failure looks like
   a bunit bug rather than what it is.
 - **No library type crosses interop as `InvokeAsync<T>`'s type argument —

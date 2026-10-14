@@ -13,7 +13,8 @@ namespace BgFolderAccess_Razor;
 /// <b>The pick's facts and its sample are kept apart</b> because they are
 /// answered by different things. The folder and its write capability are
 /// settled once, by the pick that bound the folder; the sample is one draw of
-/// that folder, the part a later draw replaces.
+/// that folder, the part a later draw (<see cref="IFolderAccess.ResampleAsync"/>)
+/// replaces.
 /// </para>
 ///
 /// <para>

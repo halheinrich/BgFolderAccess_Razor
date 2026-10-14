@@ -132,10 +132,10 @@ carries the per-extension count-cap table and the per-file byte cap. The
 library ships **no numbers** — each host's values encode its own cost model
 (BgQuiz's `PickedFileLimits` stays host-side; Extract Web will bring its own).
 
-- The **whole count table crosses the interop boundary on every draw** — a
-  pick's, a fallback collection's, a resample's;
-  the JS module derives both of its jobs from it — which names are matching
-  files, and how many of each to take — and keeps no copy (SSOT). It crosses
+- The **whole count table crosses the interop boundary on every draw** (a
+  pick's, a fallback collection's, a resample's); the JS module derives both
+  of its jobs from it — which names are matching files, and how many of each
+  to take — and keeps no copy (SSOT). It crosses
   as one JSON object that `JsFolderAccess.ToWireCaps` writes, members in the
   table's order, so the module's `Object.keys` order (and with it the
   per-kind report's order) is the host's. The Jint suite hands the module
@@ -146,10 +146,10 @@ library ships **no numbers** — each host's values encode its own cost model
 - **Every draw reports every kind** (`FolderSample.Kinds`): one `SampledKind`
   per entry of the table, in its order, with how many matching files the
   draw found and how many it admitted — a kind the folder held none of
-  included, at zero. It is the only report of those counts (it replaced the
-  truncated-kinds-only `PickTruncation`), and `FolderSample.HoldsEveryMatchingFile`
-  derives from it whether the sample is the only one the limits could draw,
-  so a host never classifies `Files` by name to find out.
+  included, at zero. It is the only report of those counts, and
+  `FolderSample.HoldsEveryMatchingFile` derives from it whether the sample is
+  the only one the limits could draw, so a host never classifies `Files` by
+  name to find out.
 - **An over-limit kind's survivors are drawn uniformly at random**, not taken
   in enumeration order (umbrella issue halheinrich/backgammon#106). That order
   is browser-supplied and stable, so a prefix rule put a corpus-scale folder's
@@ -158,10 +158,10 @@ library ships **no numbers** — each host's values encode its own cost model
   knob: the table is host-owned *numbers*, and how a cap picks its survivors is
   library enforcement. Files still come back in folder order, and a pick under
   every cap is unchanged from a pick that never sampled.
-- The **byte cap fails the whole pick** (`InvalidOperationException` from
-  `JsFolderAccess`, checked against enumerated metadata before any transfer)
-  and is re-asserted as `OpenReadStreamAsync(maxAllowedSize:)` on the actual
-  bytes.
+- The **byte cap fails the whole pick or resample**
+  (`InvalidOperationException` from `JsFolderAccess`, checked against the
+  drawn files' metadata before any transfer) and is re-asserted as
+  `OpenReadStreamAsync(maxAllowedSize:)` on the actual bytes.
 - Each `SampledKind.MaxFileCount` is **derived** from the enforced
   `FolderPickLimits` instance at the one lib-side construction site
   (`JsFolderAccess.ToKinds`, which takes it from the table entry at the same

@@ -16,8 +16,8 @@ namespace BgFolderAccess_Razor;
 /// cross the interop boundary (the whole <see cref="MaxFileCounts"/> table is
 /// handed to it on every enumeration, so the module holds no copy of its own),
 /// <see cref="JsFolderAccess"/> enforces the byte cap and derives each reported
-/// truncation's cap figure from this instance, and host pages document and
-/// report them. The megabyte figure is <b>derived</b> from
+/// kind's cap figure (<see cref="SampledKind.MaxFileCount"/>) from this
+/// instance, and host pages document and report them. The megabyte figure is <b>derived</b> from
 /// <see cref="MaxFileBytes"/>, never restated: raising the byte cap moves every
 /// stated figure with it.
 /// </para>
@@ -34,8 +34,8 @@ public sealed class FolderPickLimits
     /// Create a validated limits configuration.
     /// </summary>
     /// <param name="maxFileCounts">
-    /// The per-extension file-count caps, in the order any per-kind truncation
-    /// report should read them — <see cref="MaxFileCounts"/> keeps this
+    /// The per-extension file-count caps, in the order the per-kind report
+    /// should read them — <see cref="MaxFileCounts"/> keeps this
     /// sequence's order, entry for entry. Keys are
     /// lower-case, dot-leading extensions (e.g. <c>".xg"</c>); values are the
     /// maximum number of files of that kind a single pick admits.
@@ -131,8 +131,8 @@ public sealed class FolderPickLimits
     /// <para>
     /// <b>Order is position.</b> Entry <c>i</c> is the <c>i</c>-th pair the
     /// constructor was given, and that order is the table's contract: the
-    /// module's left-behind report reads in it, so a multi-kind notice reads
-    /// the way the host wrote its table. The order rests on
+    /// per-kind report (<see cref="FolderSample.Kinds"/>) reads in it, so a
+    /// multi-kind notice reads the way the host wrote its table. The order rests on
     /// <see cref="ImmutableArray{T}"/> being an array — "an array that is
     /// immutable, meaning it can't be changed once it's created", whose
     /// indexer "gets the element at the specified index" and whose enumerator
@@ -170,15 +170,13 @@ public sealed class FolderPickLimits
     public long MaxFileMegabytes => MaxFileBytes / (1024 * 1024);
 
     /// <summary>
-    /// The cap applied to <paramref name="extension"/> — the lookup behind each
-    /// reported <see cref="PickTruncation.MaxFileCount"/>, so a reported
-    /// truncation states the same figure the pick enforced.
+    /// The cap applied to <paramref name="extension"/>, looked up in
+    /// <see cref="MaxFileCounts"/>. A reported kind already carries its cap
+    /// (<see cref="SampledKind.MaxFileCount"/>, taken from this same table),
+    /// so this is for a host that needs a kind's cap without a report in hand.
     /// </summary>
     /// <exception cref="KeyNotFoundException">
     /// <paramref name="extension"/> is not a key of <see cref="MaxFileCounts"/>.
-    /// Unreachable from a truncation report: the caps table is what taught the
-    /// JS module which extensions exist, so it can only report back a key from
-    /// this table.
     /// </exception>
     public int MaxFileCountFor(string extension)
     {

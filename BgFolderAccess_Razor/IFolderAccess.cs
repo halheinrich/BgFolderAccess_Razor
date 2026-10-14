@@ -67,7 +67,7 @@ public interface IFolderAccess
     /// A matching file is larger than the configured
     /// <see cref="FolderPickLimits.MaxFileBytes"/>. A folder past the
     /// <i>count</i> caps does not throw — it truncates per kind and reports it
-    /// (<see cref="FolderPickOutcome.Truncations"/>).
+    /// (<see cref="FolderSample.Kinds"/>).
     /// </exception>
     Task<FolderPickOutcome> PickFolderAsync(Func<Task> onPickAccepted);
 
@@ -87,7 +87,7 @@ public interface IFolderAccess
     /// <see cref="FolderWriteCapability.BrowserUnsupported"/>: this mechanism
     /// yields no writable handle. An empty FileList is a non-cancelled outcome
     /// with zero files. The count caps apply here exactly as on the other
-    /// mechanism — same module, same table, same per-kind truncation report.
+    /// mechanism — same module, same table, same per-kind report.
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// A matching file is larger than the configured

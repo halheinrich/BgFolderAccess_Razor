@@ -46,7 +46,7 @@ export async function enumerateJson(namesJson, limitsJson) {
     const result = await enumeratePicked(JSON.parse(limitsJson));
     return JSON.stringify({
         files: result.files.map(f => f.name),
-        omitted: result.omitted,
+        kinds: result.kinds,
         stats,
     });
 }
@@ -63,6 +63,6 @@ export function collectFallbackJson(namesJson, limitsJson) {
     const result = collectFallbackFiles({ files, value: 'stale' }, JSON.parse(limitsJson));
     return JSON.stringify({
         files: result.files.map(f => f.name),
-        omitted: result.omitted,
+        kinds: result.kinds,
     });
 }

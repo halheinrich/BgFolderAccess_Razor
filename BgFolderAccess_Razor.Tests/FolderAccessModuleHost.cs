@@ -84,23 +84,29 @@ public sealed class FolderAccessModuleHost
     /// <param name="Files">
     /// The admitted files' names, in the order the module returned them.
     /// </param>
-    /// <param name="Omitted">The module's per-kind left-behind report.</param>
+    /// <param name="Kinds">
+    /// The module's per-kind report: one entry per kind of the caps table, in
+    /// the table's order.
+    /// </param>
     /// <param name="Stats">
     /// How many times the pick called <c>getFile()</c> — the FS-Access cost
     /// property. <c>null</c> on <see cref="Mechanism.Fallback"/>, which is
     /// handed the whole FileList up front and has nothing to defer.
     /// </param>
     public sealed record PickResult(
-        IReadOnlyList<string> Files, IReadOnlyList<OmittedKind> Omitted, int? Stats);
+        IReadOnlyList<string> Files, IReadOnlyList<DrawnKind> Kinds, int? Stats);
 
-    /// <summary>One kind's left-behind count, as it crosses the real interop wire.</summary>
-    public sealed record OmittedKind(string Extension, int OmittedCount);
+    /// <summary>
+    /// One kind's found and admitted counts, as they cross the real interop
+    /// wire. Value-equal, so a whole report is asserted in one comparison.
+    /// </summary>
+    public sealed record DrawnKind(string Extension, int FoundCount, int AdmittedCount);
 
     /// <summary>
     /// Pick a folder whose top-level files are <paramref name="fileNames"/>, in
     /// that order, against <paramref name="caps"/> — the per-extension count-cap
-    /// table, <b>in its key order</b>, which the left-behind report is required
-    /// to read in.
+    /// table, <b>in its key order</b>, which the per-kind report is required to
+    /// read in.
     ///
     /// <para>
     /// The caps reach the module through production's own path: validated by

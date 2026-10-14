@@ -5,7 +5,7 @@ namespace BgFolderAccess_Razor.Tests;
 /// <summary>
 /// The host-supplied caps configuration: construction validates everything the
 /// enforcement machinery assumes (so a bad table fails at registration, not
-/// mid-pick), the table preserves the host's order (truncation reports read in
+/// mid-pick), the table preserves the host's order (the per-kind report reads in
 /// it), nothing it hands out can be written back into, and the derived figures
 /// come from the one stored rule.
 /// </summary>
@@ -92,9 +92,8 @@ public class FolderPickLimitsTests
     [Fact]
     public void MaxFileCountFor_UnknownExtension_Throws()
     {
-        // Documented unreachable from a truncation report (the table taught the
-        // JS module which extensions exist), but the contract for any other
-        // caller is a loud KeyNotFoundException, not a silent default.
+        // The contract for an extension the table does not hold is a loud
+        // KeyNotFoundException, not a silent default.
         var limits = Valid();
 
         Assert.Throws<KeyNotFoundException>(() => limits.MaxFileCountFor(".mat"));

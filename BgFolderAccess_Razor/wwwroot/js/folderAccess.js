@@ -36,9 +36,12 @@ function matchingExtensionOf(name, limits) {
 
 // Per-extension admission against the caps table, in two phases: collect()
 // takes every matching file the walk finds, then draw() chooses each kind's
-// admitted subset and tallies what it left behind. draw() reports only the
-// kinds actually truncated, in the table's own order so a multi-line notice is
-// deterministic.
+// admitted subset and reports, for EVERY kind of the table, how many files it
+// found and how many it admitted — a kind the folder held none of included, so
+// the report alone says whether any kind was cut short. The report reads in the
+// table's own order so a multi-line notice is deterministic. The cap itself is
+// not reported: it came from C# in the first place, and JsFolderAccess derives
+// it back from the table rather than trusting a round-tripped copy.
 //
 // THE SUBSET IS DRAWN UNIFORMLY AT RANDOM, not taken from the front. Admitting
 // the first limits[ext] files in enumeration order — what this did until
@@ -90,17 +93,14 @@ function createCountSampler(limits) {
         },
         draw() {
             const drawn = new Set();
-            const omitted = [];
+            const kinds = [];
             for (const extension of Object.keys(limits)) {
-                const found = positions.get(extension);
-                if (found === undefined) continue;
-                const cap = limits[extension];
-                if (found.length > cap) {
-                    omitted.push({ extension, omittedCount: found.length - cap });
-                }
-                for (const index of sample(found, cap)) drawn.add(index);
+                const found = positions.get(extension) ?? [];
+                const taken = sample(found, limits[extension]);
+                for (const index of taken) drawn.add(index);
+                kinds.push({ extension, foundCount: found.length, admittedCount: taken.length });
             }
-            return { admitted: matching.filter((_, i) => drawn.has(i)), omitted };
+            return { admitted: matching.filter((_, i) => drawn.has(i)), kinds };
         },
     };
 }
@@ -239,7 +239,7 @@ export async function enumeratePicked(limits) {
         sampler.collect(extension, entry);
     }
 
-    const { admitted, omitted } = sampler.draw();
+    const { admitted, kinds } = sampler.draw();
     const files = [];
     const map = new Map();
     for (const entry of admitted) {
@@ -251,7 +251,7 @@ export async function enumeratePicked(limits) {
     // Only the drawn files land in the picked slot: readFileData serves the
     // buffering pass, and what was left behind is not readable by this pick.
     pickedFiles = map;
-    return { files, omitted };
+    return { files, kinds };
 }
 
 // Fallback gesture: open the hidden webkitdirectory input's native picker.
@@ -280,7 +280,7 @@ export function collectFallbackFiles(inputElement, limits) {
         sampler.collect(extension, f);
     }
 
-    const { admitted, omitted } = sampler.draw();
+    const { admitted, kinds } = sampler.draw();
     const directoryName = all.length > 0 ? all[0].webkitRelativePath.split('/')[0] : '';
 
     pickedHandle = null;  // no writable handle on this mechanism
@@ -291,7 +291,7 @@ export function collectFallbackFiles(inputElement, limits) {
     return {
         directoryName,
         files: admitted.map(f => ({ name: f.name, size: f.size })),
-        omitted,
+        kinds,
     };
 }
 

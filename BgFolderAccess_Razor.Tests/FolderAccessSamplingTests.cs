@@ -42,9 +42,10 @@ public class FolderAccessSamplingTests
             mechanism, ["a.xg", "b.xgp", "c.xg"], (".xg", 3), (".xgp", 5));
 
         // The no-op case: nothing to choose between, so the draw has to be
-        // indistinguishable from a pick that never sampled at all.
+        // indistinguishable from a pick that never sampled at all — and the
+        // report says so for every kind, found and admitted alike.
         Assert.Equal(["a.xg", "b.xgp", "c.xg"], result.Files);
-        Assert.Empty(result.Omitted);
+        Assert.Equal<DrawnKind>([new(".xg", 2, 2), new(".xgp", 1, 1)], result.Kinds);
     }
 
     [Theory]
@@ -55,7 +56,7 @@ public class FolderAccessSamplingTests
             mechanism, ["a.xg", "b.xg", "c.xg"], (".xg", 3));
 
         Assert.Equal(["a.xg", "b.xg", "c.xg"], result.Files);
-        Assert.Empty(result.Omitted);
+        Assert.Equal<DrawnKind>([new(".xg", 3, 3)], result.Kinds);
     }
 
     [Theory]
@@ -65,12 +66,10 @@ public class FolderAccessSamplingTests
         var result = new FolderAccessModuleHost().Pick(
             mechanism, ["a.xg", "b.xg", "c.xg", "d.xg", "e.xg"], (".xg", 2));
 
-        // |admitted| = min(cap, matching), and the report accounts for the
-        // difference exactly — no file is both taken and counted as omitted.
+        // |admitted| = min(cap, matching), and the report accounts for it
+        // exactly: every file found, and only the files taken as admitted.
         Assert.Equal(2, result.Files.Count);
-        var omitted = Assert.Single(result.Omitted);
-        Assert.Equal(".xg", omitted.Extension);
-        Assert.Equal(3, omitted.OmittedCount);
+        Assert.Equal<DrawnKind>([new(".xg", FoundCount: 5, AdmittedCount: 2)], result.Kinds);
     }
 
     [Theory]
@@ -98,11 +97,11 @@ public class FolderAccessSamplingTests
             (".xgp", 5));
 
         // Per-kind independence: file count is only a cost proxy within one
-        // kind, so a kind nowhere near its cap survives intact and stays out of
-        // the report even while another kind is being cut down.
+        // kind, so a kind nowhere near its cap survives intact, and is reported
+        // whole, even while another kind is being cut down.
         Assert.Equal(["b.xgp", "d.xgp"], [.. result.Files.Where(name => name.EndsWith(".xgp"))]);
         Assert.Equal(2, result.Files.Count(name => name.EndsWith(".xg")));
-        Assert.Equal(".xg", Assert.Single(result.Omitted).Extension);
+        Assert.Equal<DrawnKind>([new(".xg", 4, 2), new(".xgp", 2, 2)], result.Kinds);
     }
 
     [Theory]
@@ -121,16 +120,16 @@ public class FolderAccessSamplingTests
 
     [Theory]
     [MemberData(nameof(Mechanisms))]
-    public void NamesOutsideTheCapsTable_AreNeitherAdmittedNorOmitted(Mechanism mechanism)
+    public void NamesOutsideTheCapsTable_AreNeitherFoundNorAdmitted(Mechanism mechanism)
     {
         var result = new FolderAccessModuleHost().Pick(
             mechanism, ["a.xg", "notes.txt", "b.xg", "readme.md"], (".xg", 1));
 
         // Non-matching names are not files the pick declined to take; they were
-        // never candidates, so they must not inflate the left-behind count.
+        // never candidates, so they must not inflate the found count.
         Assert.Single(result.Files);
         Assert.EndsWith(".xg", result.Files[0]);
-        Assert.Equal(1, Assert.Single(result.Omitted).OmittedCount);
+        Assert.Equal<DrawnKind>([new(".xg", FoundCount: 2, AdmittedCount: 1)], result.Kinds);
     }
 
     [Theory]
@@ -148,8 +147,20 @@ public class FolderAccessSamplingTests
         // The table is deliberately in neither ordinal nor encounter order (the
         // folder meets .xg first), so only the table's own order passes: this
         // is what pins the wire builder the host now shares with production.
-        Assert.Equal([".xgp", ".xg"], [.. result.Omitted.Select(kind => kind.Extension)]);
-        Assert.Equal([1, 1], [.. result.Omitted.Select(kind => kind.OmittedCount)]);
+        Assert.Equal<DrawnKind>([new(".xgp", 3, 2), new(".xg", 2, 1)], result.Kinds);
+    }
+
+    [Theory]
+    [MemberData(nameof(Mechanisms))]
+    public void AKindTheFolderHoldsNoneOf_IsStillReported_InTableOrder(Mechanism mechanism)
+    {
+        var result = new FolderAccessModuleHost().Pick(
+            mechanism, ["a.xg", "notes.txt", "b.xg"], (".xgp", 5), (".xg", 3));
+
+        // Every kind of the table is in the report, so a consumer reads "none
+        // of this kind" off the report rather than inferring it from a gap —
+        // and the absent kind holds its place in the table's order.
+        Assert.Equal<DrawnKind>([new(".xgp", 0, 0), new(".xg", 2, 2)], result.Kinds);
     }
 
     [Theory]

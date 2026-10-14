@@ -4,47 +4,145 @@ namespace BgFolderAccess_Razor.Tests;
 
 /// <summary>
 /// The outcome value types' stated contracts: the cancelled singleton carries
-/// nothing, the collection members refuse a default array and every write,
-/// and <see cref="PickTruncation"/> compares by value. <see cref="PickedFile"/>
-/// and <see cref="FolderPickOutcome"/> do not: they compare their arrays by
-/// reference, so a test compares their members.
+/// nothing, a sample's collection members refuse a default array and every
+/// write, a sample says whether it holds every matching file, and
+/// <see cref="SampledKind"/> validates its counts and compares by value.
+/// <see cref="PickedFile"/>, <see cref="FolderSample"/> and
+/// <see cref="FolderPickOutcome"/> do not compare by value: they compare their
+/// arrays (or the sample holding them) by reference, so a test compares their
+/// members.
 /// </summary>
 public class FolderPickOutcomeTests
 {
     [Fact]
-    public void CancelledOutcome_CarriesNoFolderNoFilesNoTruncations()
+    public void CancelledOutcome_CarriesNoFolderNoFilesNoKinds()
     {
         var outcome = FolderPickOutcome.CancelledOutcome;
 
         Assert.True(outcome.Cancelled);
         Assert.Equal("", outcome.DirectoryName);
-        Assert.Empty(outcome.Files);
-        Assert.Empty(outcome.Truncations);
+        Assert.Empty(outcome.Sample.Files);
+        Assert.Empty(outcome.Sample.Kinds);
     }
 
     [Fact]
-    public void Outcome_Collections_ImplementExactlyTheInterfacesTheWriteTestCovers()
+    public void Sample_Collections_ImplementExactlyTheInterfacesTheWriteTestCovers()
     {
-        // The records' collection members are the type-level guarantee; the
+        // The record's collection members are the type-level guarantee; the
         // write refusals themselves are pinned where the library builds real
-        // outcomes (JsFolderAccessTests), which is where the List leaked.
-        var outcome = new FolderPickOutcome(
-            Cancelled: false, "Corpus", [new PickedFile("a.xg", [1])], FolderWriteCapability.Enabled,
-            [new PickTruncation(".xg", OmittedCount: 1, MaxFileCount: 1)]);
+        // samples (JsFolderAccessTests), which is where the List leaked.
+        var sample = OneFileSample();
 
-        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(outcome.Files);
-        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickTruncation>(outcome.Truncations);
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(sample.Files);
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<SampledKind>(sample.Kinds);
     }
 
     [Fact]
-    public void PickTruncation_ComparesByValue()
+    public void Outcome_CarriesTheSampleItWasGiven()
+    {
+        var sample = OneFileSample();
+
+        var outcome = new FolderPickOutcome(Cancelled: false, "Corpus", FolderWriteCapability.Enabled, sample);
+
+        Assert.Same(sample, outcome.Sample);
+    }
+
+    [Fact]
+    public void SampledKind_ComparesByValue()
     {
         Assert.Equal(
-            new PickTruncation(".xg", OmittedCount: 12, MaxFileCount: 500),
-            new PickTruncation(".xg", OmittedCount: 12, MaxFileCount: 500));
+            new SampledKind(".xg", foundCount: 512, admittedCount: 500, maxFileCount: 500),
+            new SampledKind(".xg", foundCount: 512, admittedCount: 500, maxFileCount: 500));
         Assert.NotEqual(
-            new PickTruncation(".xg", OmittedCount: 12, MaxFileCount: 500),
-            new PickTruncation(".xg", OmittedCount: 12, MaxFileCount: 501));
+            new SampledKind(".xg", foundCount: 512, admittedCount: 500, maxFileCount: 500),
+            new SampledKind(".xg", foundCount: 512, admittedCount: 500, maxFileCount: 501));
+        Assert.NotEqual(
+            new SampledKind(".xg", foundCount: 3, admittedCount: 3, maxFileCount: 500),
+            new SampledKind(".xg", foundCount: 3, admittedCount: 2, maxFileCount: 500));
+    }
+
+    [Fact]
+    public void SampledKind_KeepsWhatItWasGiven_AndDerivesTheOmittedCount()
+    {
+        var kind = new SampledKind(".xgp", foundCount: 2340, admittedCount: 2000, maxFileCount: 2000);
+
+        Assert.Equal(".xgp", kind.Extension);
+        Assert.Equal(2340, kind.FoundCount);
+        Assert.Equal(2000, kind.AdmittedCount);
+        Assert.Equal(2000, kind.MaxFileCount);
+        Assert.Equal(340, kind.OmittedCount);
+    }
+
+    [Theory]
+    [InlineData(0, 0, 1)]     // a kind the folder held none of
+    [InlineData(3, 3, 5)]     // within the cap: all admitted
+    [InlineData(5, 5, 5)]     // exactly at the cap
+    [InlineData(9, 5, 5)]     // over the cap: the cap admitted
+    public void SampledKind_AcceptsTheBoundaries(int found, int admitted, int max)
+    {
+        var kind = new SampledKind(".xg", found, admitted, max);
+
+        Assert.Equal(found - admitted, kind.OmittedCount);
+    }
+
+    [Fact]
+    public void SampledKind_NullExtension_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() => new SampledKind(null!, 1, 1, 1));
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 1, "foundCount")]     // a negative count found
+    [InlineData(1, -1, 1, "admittedCount")]  // a negative count admitted
+    [InlineData(1, 0, 0, "maxFileCount")]    // a cap no FolderPickLimits holds
+    [InlineData(1, 0, -1, "maxFileCount")]
+    [InlineData(2, 3, 5, "admittedCount")]   // admitted a file it did not find
+    [InlineData(9, 6, 5, "admittedCount")]   // admitted past the cap
+    public void SampledKind_AnImpossibleReport_IsRefused(int found, int admitted, int max, string parameter)
+    {
+        // An admitted count past the found count or the cap would argue the
+        // derived OmittedCount and HoldsEveryMatchingFile into nonsense, so no
+        // such report exists, whoever builds it.
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => new SampledKind(".xg", found, admitted, max));
+        Assert.Equal(parameter, ex.ParamName);
+    }
+
+    [Fact]
+    public void Sample_HoldsEveryMatchingFile_WhenEveryKindIsWhole()
+    {
+        var sample = new FolderSample(
+            Files: [],
+            Kinds:
+            [
+                new SampledKind(".xg", foundCount: 3, admittedCount: 3, maxFileCount: 500),
+                new SampledKind(".xgp", foundCount: 0, admittedCount: 0, maxFileCount: 2000),
+            ]);
+
+        Assert.True(sample.HoldsEveryMatchingFile);
+    }
+
+    [Fact]
+    public void Sample_DoesNotHoldEveryMatchingFile_WhenAnyKindIsShort()
+    {
+        // One kind cut short is enough: another draw at the same limits could
+        // hold different files of it, whatever the other kinds did.
+        var sample = new FolderSample(
+            Files: [],
+            Kinds:
+            [
+                new SampledKind(".xg", foundCount: 3, admittedCount: 3, maxFileCount: 500),
+                new SampledKind(".xgp", foundCount: 2001, admittedCount: 2000, maxFileCount: 2000),
+            ]);
+
+        Assert.False(sample.HoldsEveryMatchingFile);
+    }
+
+    [Fact]
+    public void Sample_WithNoKinds_HoldsEveryMatchingFile()
+    {
+        // The empty report is the cancelled outcome's filler — no draw ran,
+        // so no kind was cut short. Pinned so the edge is a stated answer.
+        Assert.True(FolderPickOutcome.CancelledOutcome.Sample.HoldsEveryMatchingFile);
     }
 
     [Fact]
@@ -123,9 +221,9 @@ public class FolderPickOutcomeTests
     // One test per member, each path asserted separately, so dropping any one
     // of the six refusals fails exactly one test.
 
-    private static FolderPickOutcome OneFileOutcome() => new(
-        Cancelled: false, "Corpus", [new PickedFile("a.xg", [1])], FolderWriteCapability.Enabled,
-        [new PickTruncation(".xg", OmittedCount: 1, MaxFileCount: 1)]);
+    private static FolderSample OneFileSample() => new(
+        Files: [new PickedFile("a.xg", [1])],
+        Kinds: [new SampledKind(".xg", foundCount: 2, admittedCount: 1, maxFileCount: 1)]);
 
     [Fact]
     public void PickedFile_DefaultBytes_RefusedByTheConstructorAndByWith()
@@ -139,38 +237,36 @@ public class FolderPickOutcomeTests
     }
 
     [Fact]
-    public void FolderPickOutcome_DefaultFiles_RefusedByTheConstructorAndByWith()
+    public void FolderSample_DefaultFiles_RefusedByTheConstructorAndByWith()
     {
-        var atConstruction = Assert.Throws<ArgumentException>(() => new FolderPickOutcome(
-            Cancelled: false, "Corpus", Files: default, FolderWriteCapability.Enabled, Truncations: []));
-        Assert.Equal(nameof(FolderPickOutcome.Files), atConstruction.ParamName);
+        var atConstruction = Assert.Throws<ArgumentException>(() => new FolderSample(Files: default, Kinds: []));
+        Assert.Equal(nameof(FolderSample.Files), atConstruction.ParamName);
 
-        var viaWith = Assert.Throws<ArgumentException>(() => OneFileOutcome() with { Files = default });
-        Assert.Equal(nameof(FolderPickOutcome.Files), viaWith.ParamName);
+        var viaWith = Assert.Throws<ArgumentException>(() => OneFileSample() with { Files = default });
+        Assert.Equal(nameof(FolderSample.Files), viaWith.ParamName);
     }
 
     [Fact]
-    public void FolderPickOutcome_DefaultTruncations_RefusedByTheConstructorAndByWith()
+    public void FolderSample_DefaultKinds_RefusedByTheConstructorAndByWith()
     {
-        var atConstruction = Assert.Throws<ArgumentException>(() => new FolderPickOutcome(
-            Cancelled: false, "Corpus", Files: [], FolderWriteCapability.Enabled, Truncations: default));
-        Assert.Equal(nameof(FolderPickOutcome.Truncations), atConstruction.ParamName);
+        var atConstruction = Assert.Throws<ArgumentException>(() => new FolderSample(Files: [], Kinds: default));
+        Assert.Equal(nameof(FolderSample.Kinds), atConstruction.ParamName);
 
-        var viaWith = Assert.Throws<ArgumentException>(() => OneFileOutcome() with { Truncations = default });
-        Assert.Equal(nameof(FolderPickOutcome.Truncations), viaWith.ParamName);
+        var viaWith = Assert.Throws<ArgumentException>(() => OneFileSample() with { Kinds = default });
+        Assert.Equal(nameof(FolderSample.Kinds), viaWith.ParamName);
     }
 
     [Fact]
     public void EmptyArrays_AreAcceptedOnBothWaysIn()
     {
-        // "No bytes", "no files" and "nothing left behind" are Empty, and the
-        // guard must not mistake them for default — through either path.
+        // "No bytes", "no files" and "no kinds" are Empty, and the guard must
+        // not mistake them for default — through either path.
         Assert.Empty(new PickedFile("empty.xg", []).Bytes);
         Assert.Empty((new PickedFile("a.xg", [1]) with { Bytes = [] }).Bytes);
 
-        var emptied = OneFileOutcome() with { Files = [], Truncations = [] };
+        var emptied = OneFileSample() with { Files = [], Kinds = [] };
         Assert.Empty(emptied.Files);
-        Assert.Empty(emptied.Truncations);
+        Assert.Empty(emptied.Kinds);
     }
 
     [Fact]
@@ -180,7 +276,7 @@ public class FolderPickOutcomeTests
         var file = new PickedFile("a.xg", [1]) with { Bytes = [7, 8] };
         Assert.Equal<byte>([7, 8], file.Bytes);
 
-        var outcome = OneFileOutcome() with { Files = [new PickedFile("b.xgp", [2])] };
-        Assert.Equal("b.xgp", Assert.Single(outcome.Files).FileName);
+        var sample = OneFileSample() with { Files = [new PickedFile("b.xgp", [2])] };
+        Assert.Equal("b.xgp", Assert.Single(sample.Files).FileName);
     }
 }

@@ -7,8 +7,8 @@ namespace BgFolderAccess_Razor.Tests;
 /// The one definition of "nothing a caller can write back into"
 /// (halheinrich/backgammon#273), shared by every public member that hands out
 /// a collection: <see cref="FolderPickLimits.MaxFileCounts"/>,
-/// <see cref="PickedFile.Bytes"/>, and <see cref="FolderPickOutcome"/>'s
-/// <c>Files</c> and <c>Truncations</c>. Each is an
+/// <see cref="PickedFile.Bytes"/>, and <see cref="FolderSample"/>'s
+/// <c>Files</c> and <c>Kinds</c>. Each is an
 /// <see cref="ImmutableArray{T}"/>, and these assertions pin what that buys.
 ///
 /// <para>

@@ -7,11 +7,11 @@ namespace BgFolderAccess_Razor;
 /// to a public record member (halheinrich/backgammon#273).
 ///
 /// <para>
-/// <b>Why it exists.</b> <see cref="PickedFile.Bytes"/>,
-/// <see cref="FolderPickOutcome.Files"/> and
-/// <see cref="FolderPickOutcome.Truncations"/> were non-nullable reference
-/// types, so under this repo's nullable warnings-as-errors a <c>null</c> for
-/// them failed the build. As <see cref="ImmutableArray{T}"/>s they are structs,
+/// <b>Why it exists.</b> <see cref="PickedFile.Bytes"/> and the pick's files
+/// and per-kind report (now <see cref="FolderSample.Files"/> and
+/// <see cref="FolderSample.Kinds"/>) were non-nullable reference types, so
+/// under this repo's nullable warnings-as-errors a <c>null</c> for them failed
+/// the build. As <see cref="ImmutableArray{T}"/>s they are structs,
 /// which nullable analysis does not see, and <c>default</c> compiles
 /// silently. It is no domain state either: "no files" and "no bytes" are
 /// <see cref="ImmutableArray{T}.Empty"/>. A default array holds no array at

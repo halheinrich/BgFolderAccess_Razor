@@ -40,8 +40,9 @@ components. Three areas:
   source-generated metadata its wire replies are read through (see Test
   posture for why a context, not the runtime's own deserializer).
 - **The pick's values** — `FolderPickOutcome`, the result of one pick
-  gesture; `PickedFile`, one buffered matching file; `PickTruncation`, one
-  file kind's left-behind report; `FolderWriteCapability`, the pick-time
+  gesture; `FolderSample`, one draw of the folder (its files and its
+  per-kind report); `PickedFile`, one buffered matching file; `SampledKind`,
+  one file kind's found and admitted counts; `FolderWriteCapability`, the pick-time
   write-capability taxonomy; `PickedFileWritability`, one named file's
   writability as the setup-time probe answers it; `FolderPickLimits`, the host-supplied caps
   configuration, validated at construction.
@@ -79,8 +80,9 @@ web asset (`./_content/BgFolderAccess_Razor/js/folderAccess.js`).
   top-level matching files. No writable handle —
   `FolderWriteCapability.BrowserUnsupported` always.
 
-Both land in the same `FolderPickOutcome`; the capability and truncation
-contracts are identical across mechanisms (same module, same caps table).
+Both land in the same `FolderPickOutcome`; the capability and per-kind
+report contracts are identical across mechanisms (same module, same caps
+table).
 `SupportsDirectoryPickerAsync` is probed per gesture, not at boot — capability
 is a property of the moment.
 
@@ -112,12 +114,18 @@ library ships **no numbers** — each host's values encode its own cost model
   files, and how many of each to take — and keeps no copy (SSOT). It crosses
   as one JSON object that `JsFolderAccess.ToWireCaps` writes, members in the
   table's order, so the module's `Object.keys` order (and with it the
-  left-behind report's order) is the host's. The Jint suite hands the module
+  per-kind report's order) is the host's. The Jint suite hands the module
   that same object (`FolderAccessModuleHost` calls `ToWireCaps`), so it runs
   the wire production sends, not a second encoding of it.
 - **Count caps truncate, never fail**, per extension independently, in the JS
-  module (the only place an extension is known before transfer). What was left
-  behind rides back as `FolderPickOutcome.Truncations`.
+  module (the only place an extension is known before transfer).
+- **Every draw reports every kind** (`FolderSample.Kinds`): one `SampledKind`
+  per entry of the table, in its order, with how many matching files the
+  draw found and how many it admitted — a kind the folder held none of
+  included, at zero. It is the only report of those counts (it replaced the
+  truncated-kinds-only `PickTruncation`), and `FolderSample.HoldsEveryMatchingFile`
+  derives from it whether the sample is the only one the limits could draw,
+  so a host never classifies `Files` by name to find out.
 - **An over-limit kind's survivors are drawn uniformly at random**, not taken
   in enumeration order (umbrella issue halheinrich/backgammon#106). That order
   is browser-supplied and stable, so a prefix rule put a corpus-scale folder's
@@ -130,11 +138,15 @@ library ships **no numbers** — each host's values encode its own cost model
   `JsFolderAccess`, checked against enumerated metadata before any transfer)
   and is re-asserted as `OpenReadStreamAsync(maxAllowedSize:)` on the actual
   bytes.
-- Each `PickTruncation.MaxFileCount` is **derived** from the enforced
+- Each `SampledKind.MaxFileCount` is **derived** from the enforced
   `FolderPickLimits` instance at the one lib-side construction site
-  (`JsFolderAccess.ToTruncations`) — never round-tripped across interop — so
-  the figure a host's notice states is by construction the figure the pick
-  enforced.
+  (`JsFolderAccess.ToKinds`, which takes it from the table entry at the same
+  position) — never round-tripped across interop — so the figure a host's
+  notice states is by construction the figure the draw enforced. The found
+  and admitted counts are the module's, carried back; `ToKinds` refuses a
+  report that is not one entry per table kind in the table's order
+  (`JsonException`), and `SampledKind`'s constructor refuses counts no draw
+  could produce.
 
 ### Error contract
 
@@ -200,7 +212,7 @@ green build is not.
 It also **runs the shipped `folderAccess.js` itself**, in Jint, via
 `FolderAccessModuleHost` — the real file, staged beside the test assembly by
 the csproj so a rename breaks the build rather than a test. That covers the
-module's *logic*: classification, the per-kind random draw and its left-behind
+module's *logic*: classification, the per-kind random draw and its per-kind
 report, result ordering, and how many times a pick calls `getFile()`. It exists
 because the draw is the library's one real algorithm and it is written in
 JavaScript; without an engine here it would first execute one repository away,
@@ -270,22 +282,36 @@ in, so the host's source collection cannot reach it afterwards.
 
 ```csharp
 sealed record FolderPickOutcome(
-    bool Cancelled, string DirectoryName, ImmutableArray<PickedFile> Files,
-    FolderWriteCapability Capability, ImmutableArray<PickTruncation> Truncations)
-{ static FolderPickOutcome CancelledOutcome { get; } }
+    bool Cancelled, string DirectoryName, FolderWriteCapability Capability, FolderSample Sample)
+{ static FolderPickOutcome CancelledOutcome { get; } }              // empty sample: no files, no kinds
+
+sealed record FolderSample(ImmutableArray<PickedFile> Files, ImmutableArray<SampledKind> Kinds)
+{ bool HoldsEveryMatchingFile { get; } }                           // derived: no kind cut short
+
+sealed record SampledKind                                           // validated; no `with` setters
+{
+    SampledKind(string extension, int foundCount, int admittedCount, int maxFileCount);
+    string Extension { get; }
+    int FoundCount { get; }
+    int AdmittedCount { get; }
+    int MaxFileCount { get; }                                      // the enforced table's figure
+    int OmittedCount { get; }                                      // derived: found - admitted
+}
 
 sealed record PickedFile(string FileName, ImmutableArray<byte> Bytes)  // name keeps its extension
 { Stream OpenRead(); }                                             // fresh, read-only, no copy
-sealed record PickTruncation(string Extension, int OmittedCount, int MaxFileCount);
 enum FolderWriteCapability { Enabled, BrowserUnsupported, PermissionDenied }
 enum PickedFileWritability { Absent, Writable, NotWritable }        // one named file, per probe
 ```
 
 Host tests fake `IFolderAccess` and construct outcomes directly — the records
-are public for exactly that. Only `PickTruncation` is value-equal: `PickedFile`
-and `FolderPickOutcome` compare their arrays by reference, so a test compares
-their members. The array members refuse a `default` array at construction and
-in `with` (`ArgumentException` naming the member); "none" is an empty `[]`.
+are public for exactly that. Only `SampledKind` is value-equal: `PickedFile`
+and `FolderSample` compare their arrays by reference, and `FolderPickOutcome`
+its sample, so a test compares their members. The array members refuse a
+`default` array at construction and in `with` (`ArgumentException` naming the
+member); "none" is an empty `[]`. `SampledKind`'s constructor refuses a
+negative count, a non-positive cap, and an admitted count past the found count
+or the cap (`ArgumentOutOfRangeException`).
 
 ## Pitfalls
 
@@ -349,10 +375,11 @@ it re-opens a closed trap.
   So the stream is the one door left to that array: it must stay
   `writable: false` with no public buffer, and a copy-free `AsImmutableArray`
   wrap is only sound over an array nothing else holds (`BufferFilesAsync`'s
-  fresh `ToArray`). `FolderPickOutcome.Files` was the `List` that
-  `BufferFilesAsync` filled, handed out behind `IReadOnlyList`. `Files` and
-  `Truncations` are `ImmutableArray`s now, so the record's own type makes the
-  promise and no construction site has to remember it.
+  fresh `ToArray`). The pick's files were the `List` that
+  `BufferFilesAsync` filled, handed out behind `IReadOnlyList`.
+  `FolderSample.Files` and `FolderSample.Kinds` are `ImmutableArray`s, so the
+  record's own type makes the promise and no construction site has to
+  remember it.
   `ImmutableExposureAssert` is the shared test definition:
   an exact-set pin on the implemented interfaces fails any new shape until
   every writing member of every interface it implements has been tried.
@@ -364,15 +391,19 @@ it re-opens a closed trap.
   correctness rides on it.
 - **Count caps truncate; the byte cap throws — that asymmetry is
   deliberate.** A folder past a count cap still yields a useful partial pick
-  plus a truncation report; an oversized file fails the whole pick before any
-  transfer. Don't "unify" them either way: truncating on bytes would silently
-  drop a file the user can see, and throwing on counts re-opens the
-  lose-the-whole-pick failure the truncation contract closed.
-- **`Truncations` is deliberately non-optional and `PickTruncation.MaxFileCount`
-  is derived, never round-tripped.** Every outcome construction site states
-  "nothing was left behind" explicitly (empty list), and the cap figure comes
-  from the enforced `FolderPickLimits` instance at `ToTruncations` — so a
-  host notice can never state a figure the pick didn't enforce.
+  plus a per-kind report saying so; an oversized file fails the whole pick
+  before any transfer. Don't "unify" them either way: truncating on bytes
+  would silently drop a file the user can see, and throwing on counts
+  re-opens the lose-the-whole-pick failure the truncation contract closed.
+- **The report covers every kind, and `SampledKind.MaxFileCount` is derived,
+  never round-tripped.** Don't trim the report back to the kinds a cap cut
+  short: "is this the only sample the limits could draw?" is answered by
+  every kind being whole (`FolderSample.HoldsEveryMatchingFile`), and a gap
+  cannot say "none found". Don't put the cap on the wire either: it comes
+  from the enforced `FolderPickLimits` instance at `ToKinds`, so a host
+  notice can never state a figure the draw didn't enforce. Nor derive the
+  admitted count from the cap on the C# side — that would restate the draw's
+  rule in a second language; the module reports what it admitted.
 - **Extension-bearing names are a stated contract.** `PickedFile.FileName`
   keeps its extension; the JS enumeration preserves it. Hosts discriminate
   file kind from the name (BgQuiz's decision-id stamping does). Don't strip

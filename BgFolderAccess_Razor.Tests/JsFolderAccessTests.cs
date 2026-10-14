@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Bunit;
@@ -13,10 +14,10 @@ namespace BgFolderAccess_Razor.Tests;
 /// consuming host's e2e suite; these tests pin the result-shape contract:
 /// cancelled is a value not an exception, writable maps to capability, the
 /// byte cap fails the pick before bytes move, the per-extension count caps
-/// cross the wire and their left-behind counts cross back with the cap figure
-/// derived from the enforced table, the slot file I/O passes the caller's
-/// file name through, and the writability probe's three answers map one-to-one
-/// with anything else refused.
+/// cross the wire and every kind's found and admitted counts cross back with
+/// the cap figure derived from the enforced table, the slot file I/O passes
+/// the caller's file name through, and the writability probe's three answers
+/// map one-to-one with anything else refused.
 ///
 /// <para>
 /// The module's replies are scripted the way they arrive: as the
@@ -71,23 +72,42 @@ public class JsFolderAccessTests : BunitContext
                 new JsFolderAccess.JsPickStart(status, directoryName, writable),
                 BgFolderAccessJsonContext.Default.JsPickStart));
 
-    /// <summary>Script <c>enumeratePicked</c>'s reply — the app-work half, nothing truncated.</summary>
-    private static void SetupEnumerate(BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
-        SetupEnumerate(module, files, []);
+    /// <summary>
+    /// The per-kind report of a draw that took every file it found, as the
+    /// module would send it for <paramref name="files"/> under
+    /// <paramref name="limits"/>: one entry per kind of the table, in its
+    /// order, found and admitted both the number of files of that kind.
+    /// </summary>
+    private static JsFolderAccess.JsDrawnKind[] WholeDraw(
+        FolderPickLimits limits, params JsFolderAccess.JsPickedFile[] files) =>
+        [
+            .. limits.MaxFileCounts.Select(entry =>
+            {
+                var count = files.Count(file => file.Name.EndsWith(entry.Key, StringComparison.Ordinal));
+                return new JsFolderAccess.JsDrawnKind(entry.Key, count, count);
+            }),
+        ];
 
     /// <summary>
-    /// Script <c>enumeratePicked</c>'s reply including its left-behind report —
-    /// the module's account of a folder its count caps cut short.
+    /// Script <c>enumeratePicked</c>'s reply — the app-work half — for a folder
+    /// within every one of <see cref="Limits"/>' caps.
+    /// </summary>
+    private static void SetupEnumerate(BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
+        SetupEnumerate(module, files, WholeDraw(Limits, files));
+
+    /// <summary>
+    /// Script <c>enumeratePicked</c>'s reply with the per-kind report given —
+    /// the module's account of what it found and admitted.
     /// </summary>
     private static void SetupEnumerate(
         BunitJSModuleInterop module,
         JsFolderAccess.JsPickedFile[] files,
-        JsFolderAccess.JsOmittedFiles[] omitted) =>
+        JsFolderAccess.JsDrawnKind[] kinds) =>
         // Matcher, not the argument-less overload: the call carries the caps
         // table, and an exact-argument setup would simply never match it.
         module.Setup<JsonElement>("enumeratePicked", _ => true)
             .SetResult(OnTheWire(
-                new JsFolderAccess.JsEnumerateResult(files, omitted),
+                new JsFolderAccess.JsEnumerateResult(files, kinds),
                 BgFolderAccessJsonContext.Default.JsEnumerateResult));
 
     /// <summary>
@@ -98,11 +118,19 @@ public class JsFolderAccessTests : BunitContext
         BunitJSModuleInterop module,
         string directoryName,
         JsFolderAccess.JsPickedFile[] files,
-        JsFolderAccess.JsOmittedFiles[] omitted) =>
+        JsFolderAccess.JsDrawnKind[] kinds) =>
         module.Setup<JsonElement>("collectFallbackFiles", _ => true)
             .SetResult(OnTheWire(
-                new JsFolderAccess.JsFallbackResult(directoryName, files, omitted),
+                new JsFolderAccess.JsFallbackResult(directoryName, files, kinds),
                 BgFolderAccessJsonContext.Default.JsFallbackResult));
+
+    /// <summary>
+    /// <paramref name="actual"/> is the report <paramref name="expected"/>
+    /// spells, kind for kind and in order — compared by value, since
+    /// <see cref="SampledKind"/> is value-equal.
+    /// </summary>
+    private static void AssertKinds(ImmutableArray<SampledKind> actual, params SampledKind[] expected) =>
+        Assert.Equal(expected, actual);
 
     /// <summary>A hook that records nothing — for the cases the hook isn't what's under test.</summary>
     private static Func<Task> NoHook => () => Task.CompletedTask;
@@ -132,7 +160,7 @@ public class JsFolderAccessTests : BunitContext
         var outcome = await sut.PickFolderAsync(NoHook);
 
         Assert.True(outcome.Cancelled);
-        Assert.Empty(outcome.Files);
+        Assert.Empty(outcome.Sample.Files);
     }
 
     [Fact]
@@ -197,7 +225,7 @@ public class JsFolderAccessTests : BunitContext
         Assert.False(outcome.Cancelled);
         Assert.Equal(FolderWriteCapability.PermissionDenied, outcome.Capability);
         Assert.Equal("Corpus", outcome.DirectoryName);
-        var file = Assert.Single(outcome.Files);
+        var file = Assert.Single(outcome.Sample.Files);
         Assert.Equal("match.xg", file.FileName); // extension-bearing name preserved
         Assert.Equal<byte>([1, 2, 3], file.Bytes);
     }
@@ -231,7 +259,7 @@ public class JsFolderAccessTests : BunitContext
     /// enforced table, each with its cap, members in the table's order. Pinned
     /// as exact JSON text: the text's member order is what <c>JSON.parse</c>
     /// turns into the module's <c>Object.keys</c> order, the order its
-    /// left-behind report reads in.
+    /// per-kind report reads in.
     /// </summary>
     private static void AssertIsTheWireCaps(object? argument)
     {
@@ -249,7 +277,7 @@ public class JsFolderAccessTests : BunitContext
         // pairs below.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
-        SetupEnumerate(module);
+        SetupEnumerate(module, [], WholeDraw(UnsortedLimits));
         var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.PickFolderAsync(NoHook);
@@ -264,7 +292,7 @@ public class JsFolderAccessTests : BunitContext
         // table. The two mechanisms differing on this would be invisible until a
         // Firefox user's 3000-file folder behaved unlike a Chrome user's.
         var module = JSInterop.SetupModule(ModulePath);
-        SetupCollectFallback(module, "Corpus", [], []);
+        SetupCollectFallback(module, "Corpus", [], WholeDraw(UnsortedLimits));
         var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.CollectFallbackAsync(default);
@@ -272,22 +300,24 @@ public class JsFolderAccessTests : BunitContext
         AssertIsTheWireCaps(module.VerifyInvoke("collectFallbackFiles").Arguments[1]);
     }
 
+    /// <summary><paramref name="count"/> scripted files of <paramref name="extension"/>, one byte each.</summary>
+    private static IEnumerable<JsFolderAccess.JsPickedFile> FilesOf(string extension, int count) =>
+        Enumerable.Range(0, count).Select(i => new JsFolderAccess.JsPickedFile($"f{i}{extension}", 1));
+
     [Fact]
-    public async Task PickFolder_OverTheCounts_TruncatesAndReportsBothKinds_NeverThrows()
+    public async Task PickFolder_OverTheCounts_ReportsEveryKindsFoundAndAdmitted_NeverThrows()
     {
         // The truncate-don't-fail contract: the module returns what it took plus
-        // a per-kind left-behind report, and this seam carries BOTH kinds up —
-        // each capped independently, so a mixed folder can be past both at once.
-        // The cap figure on each report is derived from the injected limits, not
-        // read off the wire (the wire doesn't carry it).
+        // its per-kind account, and this seam carries every kind up — each
+        // capped independently, so a mixed folder can be past both at once.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Huge", true);
         SetupEnumerate(
             module,
-            [new JsFolderAccess.JsPickedFile("kept.xg", 1)],
+            [.. FilesOf(".xg", 3), .. FilesOf(".xgp", 5)],
             [
-                new JsFolderAccess.JsOmittedFiles(".xg", 12),
-                new JsFolderAccess.JsOmittedFiles(".xgp", 340),
+                new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 15, AdmittedCount: 3),
+                new JsFolderAccess.JsDrawnKind(".xgp", FoundCount: 345, AdmittedCount: 5),
             ]);
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
@@ -296,93 +326,146 @@ public class JsFolderAccessTests : BunitContext
         var outcome = await sut.PickFolderAsync(NoHook);
 
         Assert.False(outcome.Cancelled);
-        Assert.Single(outcome.Files); // what was taken still buffers normally
-        Assert.Collection(
-            outcome.Truncations,
-            xg =>
-            {
-                Assert.Equal(".xg", xg.Extension);
-                Assert.Equal(12, xg.OmittedCount);
-                // Derived from the injected limits, not round-tripped: the
-                // reported cap is by construction the cap the pick enforced.
-                Assert.Equal(Limits.MaxFileCountFor(".xg"), xg.MaxFileCount);
-            },
-            xgp =>
-            {
-                Assert.Equal(".xgp", xgp.Extension);
-                Assert.Equal(340, xgp.OmittedCount);
-                Assert.Equal(Limits.MaxFileCountFor(".xgp"), xgp.MaxFileCount);
-            });
+        Assert.Equal(8, outcome.Sample.Files.Length); // what was taken still buffers normally
+        // Each cap is the injected limits' figure: the wire does not carry it.
+        AssertKinds(
+            outcome.Sample.Kinds,
+            new SampledKind(".xg", foundCount: 15, admittedCount: 3, maxFileCount: Limits.MaxFileCountFor(".xg")),
+            new SampledKind(".xgp", foundCount: 345, admittedCount: 5, maxFileCount: Limits.MaxFileCountFor(".xgp")));
+        Assert.Equal([12, 340], outcome.Sample.Kinds.Select(kind => kind.OmittedCount));
+        Assert.False(outcome.Sample.HoldsEveryMatchingFile);
     }
 
     [Fact]
-    public async Task PickFolder_OutcomeCollections_RefuseEveryWrite_AndReadTheSame()
+    public async Task PickFolder_EachKindsCap_IsTheEnforcedTablesEntry_InTheTablesOrder()
+    {
+        // The derivation, on a table whose caps all differ and whose order is
+        // neither ordinal nor length order: each kind's figure is the entry
+        // the module was handed for that kind, and a kind the folder holds
+        // none of keeps its place.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupBeginPick(module, "ok", "Corpus", true);
+        SetupEnumerate(
+            module,
+            [.. FilesOf(".xgp", 5), .. FilesOf(".xg", 2)],
+            [
+                new JsFolderAccess.JsDrawnKind(".xgp", FoundCount: 9, AdmittedCount: 5),
+                new JsFolderAccess.JsDrawnKind(".mat", FoundCount: 0, AdmittedCount: 0),
+                new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 2, AdmittedCount: 2),
+            ]);
+        module.Setup<IJSStreamReference>("readFileData", inv => true)
+            .SetResult(new FakeJsStreamReference([1]));
+        var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
+
+        var outcome = await sut.PickFolderAsync(NoHook);
+
+        AssertKinds(
+            outcome.Sample.Kinds,
+            new SampledKind(".xgp", foundCount: 9, admittedCount: 5, maxFileCount: 5),
+            new SampledKind(".mat", foundCount: 0, admittedCount: 0, maxFileCount: 7),
+            new SampledKind(".xg", foundCount: 2, admittedCount: 2, maxFileCount: 3));
+    }
+
+    [Fact]
+    public async Task PickFolder_AReportOutOfTheTablesOrder_IsAWireContractViolation_BeforeAnyByteMoves()
+    {
+        // The report is the module's account over the table it was handed, so
+        // a kind in the wrong place is the shipped module breaking its
+        // contract — refused, not re-sorted. No readFileData setup exists, so
+        // a transfer attempted before the check would fail differently.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupBeginPick(module, "ok", "Corpus", true);
+        SetupEnumerate(
+            module,
+            [new JsFolderAccess.JsPickedFile("a.xg", 1)],
+            [
+                new JsFolderAccess.JsDrawnKind(".xgp", FoundCount: 0, AdmittedCount: 0),
+                new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 1, AdmittedCount: 1),
+            ]);
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<JsonException>(() => sut.PickFolderAsync(NoHook));
+    }
+
+    [Fact]
+    public async Task PickFolder_AReportMissingAKind_IsAWireContractViolation_BeforeAnyByteMoves()
+    {
+        // Every kind, or the report cannot say whether the sample is whole: a
+        // missing kind is refused rather than read as "none found".
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupBeginPick(module, "ok", "Corpus", true);
+        SetupEnumerate(
+            module,
+            [new JsFolderAccess.JsPickedFile("a.xg", 1)],
+            [new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 1, AdmittedCount: 1)]);
+        var sut = CreateSut();
+
+        await Assert.ThrowsAsync<JsonException>(() => sut.PickFolderAsync(NoHook));
+    }
+
+    [Fact]
+    public async Task PickFolder_SampleCollections_RefuseEveryWrite_AndReadTheSame()
     {
         // The regression this pins (halheinrich/backgammon#273): the pick's
         // files used to be the List this seam buffered into, handed out behind
         // IReadOnlyList — a cast added, removed or replaced files under every
-        // other holder of the outcome. Both of the outcome's collections are
+        // other holder of the outcome. Both of the sample's collections are
         // tried through every interface they implement.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Huge", true);
-        SetupEnumerate(
-            module,
-            [new JsFolderAccess.JsPickedFile("kept.xg", 1)],
-            [new JsFolderAccess.JsOmittedFiles(".xgp", 340)]);
+        SetupEnumerate(module, new JsFolderAccess.JsPickedFile("kept.xg", 1));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
         var sut = CreateSut();
 
         var outcome = await sut.PickFolderAsync(NoHook);
 
-        AssertOutcomeCollectionsRefuseEveryWrite(outcome, keptFile: "kept.xg", truncatedKind: ".xgp");
+        AssertSampleCollectionsRefuseEveryWrite(outcome.Sample, keptFile: "kept.xg");
     }
 
     [Fact]
-    public async Task CollectFallback_OutcomeCollections_RefuseEveryWrite_AndReadTheSame()
+    public async Task CollectFallback_SampleCollections_RefuseEveryWrite_AndReadTheSame()
     {
-        // The fallback builds its outcome through the same two mappings; pinned
+        // The fallback builds its sample through the same two mappings; pinned
         // separately so a mechanism that grew its own construction path could
         // not quietly hand out a mutable list again.
         var module = JSInterop.SetupModule(ModulePath);
-        SetupCollectFallback(
-            module, "Huge",
-            [new JsFolderAccess.JsPickedFile("kept.xg", 1)],
-            [new JsFolderAccess.JsOmittedFiles(".xgp", 7)]);
+        var kept = new JsFolderAccess.JsPickedFile("kept.xg", 1);
+        SetupCollectFallback(module, "Huge", [kept], WholeDraw(Limits, kept));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
         var sut = CreateSut();
 
         var outcome = await sut.CollectFallbackAsync(default);
 
-        AssertOutcomeCollectionsRefuseEveryWrite(outcome, keptFile: "kept.xg", truncatedKind: ".xgp");
+        AssertSampleCollectionsRefuseEveryWrite(outcome.Sample, keptFile: "kept.xg");
     }
 
     /// <summary>
-    /// Every write to either of <paramref name="outcome"/>'s collections is
-    /// refused, and afterwards each still holds exactly the one entry the pick
-    /// produced.
+    /// Every write to either of <paramref name="sample"/>'s collections is
+    /// refused, and afterwards the files still hold exactly the one file the
+    /// draw took and the report still reads every kind of <see cref="Limits"/>.
     /// </summary>
-    private static void AssertOutcomeCollectionsRefuseEveryWrite(
-        FolderPickOutcome outcome, string keptFile, string truncatedKind)
+    private static void AssertSampleCollectionsRefuseEveryWrite(FolderSample sample, string keptFile)
     {
-        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(outcome.Files);
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(sample.Files);
         ImmutableExposureAssert.AssertEveryWriteRefused(
-            outcome.Files, new PickedFile("intruder.xg", [0]));
-        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickTruncation>(outcome.Truncations);
+            sample.Files, new PickedFile("intruder.xg", [0]));
+        ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<SampledKind>(sample.Kinds);
         ImmutableExposureAssert.AssertEveryWriteRefused(
-            outcome.Truncations, new PickTruncation(".xg", OmittedCount: 1, MaxFileCount: 1));
+            sample.Kinds, new SampledKind(".xg", foundCount: 1, admittedCount: 1, maxFileCount: 1));
 
-        Assert.Equal(keptFile, Assert.Single(outcome.Files).FileName);
-        Assert.Equal(truncatedKind, Assert.Single(outcome.Truncations).Extension);
+        Assert.Equal(keptFile, Assert.Single(sample.Files).FileName);
+        Assert.Equal([".xg", ".xgp"], sample.Kinds.Select(kind => kind.Extension));
     }
 
     [Fact]
-    public async Task PickFolder_WithinTheCounts_ReportsNoTruncation()
+    public async Task PickFolder_WithinTheCounts_ReportsEveryKindWhole()
     {
-        // The other half of the contract: a folder that fit says so, so a
-        // host's "only for kinds actually truncated" rule has nothing to
-        // render. An empty report is the common case, not a missing one.
+        // The other half of the contract: a folder that fit says so, kind by
+        // kind, so a host decides from the report alone that this sample is
+        // the only one the limits could draw. A kind the folder holds none of
+        // is reported too, at zero.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupEnumerate(module, new JsFolderAccess.JsPickedFile("match.xg", 1));
@@ -392,24 +475,38 @@ public class JsFolderAccessTests : BunitContext
 
         var outcome = await sut.PickFolderAsync(NoHook);
 
-        Assert.Empty(outcome.Truncations);
+        AssertKinds(
+            outcome.Sample.Kinds,
+            new SampledKind(".xg", foundCount: 1, admittedCount: 1, maxFileCount: Limits.MaxFileCountFor(".xg")),
+            new SampledKind(".xgp", foundCount: 0, admittedCount: 0, maxFileCount: Limits.MaxFileCountFor(".xgp")));
+        Assert.True(outcome.Sample.HoldsEveryMatchingFile);
     }
 
     [Fact]
-    public async Task CollectFallback_OverOneCount_ReportsThatKindOnly()
+    public async Task CollectFallback_OverOneCount_ReportsEveryKind_WithOnlyThatOneShort()
     {
-        // Truncation rides the fallback's result shape too, and only the kind
-        // that was actually cut short appears.
+        // The report rides the fallback's result shape too: the kind cut short
+        // and the kind that was not, side by side.
         var module = JSInterop.SetupModule(ModulePath);
-        SetupCollectFallback(module, "Huge", [], [new JsFolderAccess.JsOmittedFiles(".xgp", 7)]);
+        SetupCollectFallback(
+            module, "Huge",
+            [.. FilesOf(".xgp", 5)],
+            [
+                new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 0, AdmittedCount: 0),
+                new JsFolderAccess.JsDrawnKind(".xgp", FoundCount: 12, AdmittedCount: 5),
+            ]);
+        module.Setup<IJSStreamReference>("readFileData", inv => true)
+            .SetResult(new FakeJsStreamReference([1]));
         var sut = CreateSut();
 
         var outcome = await sut.CollectFallbackAsync(default);
 
-        var only = Assert.Single(outcome.Truncations);
-        Assert.Equal(".xgp", only.Extension);
-        Assert.Equal(7, only.OmittedCount);
-        Assert.Equal(Limits.MaxFileCountFor(".xgp"), only.MaxFileCount);
+        AssertKinds(
+            outcome.Sample.Kinds,
+            new SampledKind(".xg", foundCount: 0, admittedCount: 0, maxFileCount: Limits.MaxFileCountFor(".xg")),
+            new SampledKind(".xgp", foundCount: 12, admittedCount: 5, maxFileCount: Limits.MaxFileCountFor(".xgp")));
+        Assert.Equal(7, outcome.Sample.Kinds[1].OmittedCount);
+        Assert.False(outcome.Sample.HoldsEveryMatchingFile);
     }
 
     [Fact]

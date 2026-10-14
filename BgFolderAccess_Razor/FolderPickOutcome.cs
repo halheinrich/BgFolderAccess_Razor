@@ -1,15 +1,20 @@
-using System.Collections.Immutable;
-
 namespace BgFolderAccess_Razor;
 
 /// <summary>
 /// The result of one folder-pick gesture, whichever mechanism served it.
 /// <see cref="Cancelled"/> <c>true</c> means the pick ended with no folder — an
 /// expected outcome, not an error, carrying no other data. Otherwise
-/// <see cref="Files"/> holds the folder's top-level matching files fully
-/// buffered (extension-bearing names — see <see cref="PickedFile.FileName"/>),
-/// <see cref="Capability"/> says whether the folder can be written into, and
-/// <see cref="Truncations"/> reports any kind the count caps cut short.
+/// <see cref="DirectoryName"/> names the folder, <see cref="Capability"/> says
+/// whether it can be written into, and <see cref="Sample"/> holds the pick's
+/// draw of its top-level matching files: the files, fully buffered, and the
+/// per-kind account of what was found and admitted.
+///
+/// <para>
+/// <b>The pick's facts and its sample are kept apart</b> because they are
+/// answered by different things. The folder and its write capability are
+/// settled once, by the pick that bound the folder; the sample is one draw of
+/// that folder, the part a later draw replaces.
+/// </para>
 ///
 /// <para>
 /// <b>Cancelled has two causes, and does not say which.</b> The user dismissed
@@ -24,76 +29,33 @@ namespace BgFolderAccess_Razor;
 /// </para>
 ///
 /// <para>
-/// <b>An over-limit folder's <see cref="Files"/> is a random sample.</b> Each
-/// count cap admits a uniformly random subset of its kind, so re-picking one
-/// over-limit folder can hand back a different set of files — which is the
-/// point: repeated picks reach a corpus larger than the caps admit, where
-/// taking a fixed prefix would put the same excess permanently out of reach.
-/// Files still arrive in folder-enumeration order, and a folder that fit every
-/// cap is entirely unaffected. See <see cref="PickTruncation"/>.
-/// </para>
-///
-/// <para>
-/// <b>Immutable all the way down</b> (halheinrich/backgammon#273).
-/// <see cref="Files"/> and <see cref="Truncations"/> are
-/// <see cref="ImmutableArray{T}"/>s, so the type itself guarantees what a
-/// read-only interface only suggested. The library once built
-/// <see cref="Files"/> as a <c>List</c> behind <c>IReadOnlyList</c>, and a
-/// cast rewrote the pick under every other holder of the outcome. Every
-/// writing member of every interface the arrays implement throws
-/// <see cref="NotSupportedException"/>, and no caller, host-side test fakes
-/// included, can construct an outcome over a collection it keeps writing to.
-/// Nor over a <c>default</c> array: the constructor and <c>with</c> refuse one
-/// for either member (see <see cref="Files"/>).
+/// Compares <see cref="Sample"/> by reference, as that record compares its
+/// arrays, so a test compares members.
 /// </para>
 /// </summary>
 /// <param name="Cancelled">True when the pick ended holding no folder — see the type remarks.</param>
 /// <param name="DirectoryName">The picked folder's leaf name (empty when cancelled).</param>
-/// <param name="Files">Top-level matching files, buffered (empty when cancelled).</param>
 /// <param name="Capability">Whether the host can write files into this folder.</param>
-/// <param name="Truncations">
-/// The matching-file kinds a count cap cut short, one entry per truncated kind
-/// and empty when the folder fit — the pick's own account of what it did not
-/// read. Deliberately <b>not</b> optional: a caller that renders the pick has
-/// to be handed the fact that it is partial, and every construction site is a
-/// place where "nothing was left behind" is a claim worth stating out loud.
+/// <param name="Sample">
+/// The pick's draw of the folder: its admitted files, buffered, and its
+/// per-kind report (<see cref="FolderSample.Kinds"/>). Deliberately <b>not</b>
+/// optional, and the report deliberately covers every kind: a caller that
+/// renders the pick has to be handed whether it is partial, and a kind the
+/// caps cut short is reported beside the kinds they did not.
 /// </param>
 public sealed record FolderPickOutcome(
     bool Cancelled,
     string DirectoryName,
-    ImmutableArray<PickedFile> Files,
     FolderWriteCapability Capability,
-    ImmutableArray<PickTruncation> Truncations)
+    FolderSample Sample)
 {
     /// <summary>
-    /// Top-level matching files, buffered (empty when cancelled). Never a
-    /// <c>default</c> array: the constructor and <c>with</c> both refuse one
-    /// with an <see cref="ArgumentException"/> naming this member.
-    /// </summary>
-    public ImmutableArray<PickedFile> Files
-    {
-        get;
-        init => field = ImmutableArrayArgument.RequireNotDefault(value, nameof(Files));
-    } = ImmutableArrayArgument.RequireNotDefault(Files, nameof(Files));
-
-    /// <summary>
-    /// The matching-file kinds a count cap cut short, empty when the folder
-    /// fit — see the constructor parameter. Never a <c>default</c> array: the
-    /// constructor and <c>with</c> both refuse one with an
-    /// <see cref="ArgumentException"/> naming this member.
-    /// </summary>
-    public ImmutableArray<PickTruncation> Truncations
-    {
-        get;
-        init => field = ImmutableArrayArgument.RequireNotDefault(value, nameof(Truncations));
-    } = ImmutableArrayArgument.RequireNotDefault(Truncations, nameof(Truncations));
-
-    /// <summary>
-    /// The single cancelled outcome — no folder, no files, no capability claim
-    /// (the <see cref="FolderWriteCapability.BrowserUnsupported"/> it carries is
-    /// filler, meaningless while <see cref="Cancelled"/> is true), nothing left
-    /// behind.
+    /// The single cancelled outcome — no folder, no capability claim (the
+    /// <see cref="FolderWriteCapability.BrowserUnsupported"/> it carries is
+    /// filler, meaningless while <see cref="Cancelled"/> is true), and an empty
+    /// <see cref="Sample"/> with no files and no kinds: no draw ran, so it
+    /// reports none, and it is filler too.
     /// </summary>
     public static FolderPickOutcome CancelledOutcome { get; } =
-        new(Cancelled: true, DirectoryName: "", Files: [], FolderWriteCapability.BrowserUnsupported, Truncations: []);
+        new(Cancelled: true, DirectoryName: "", FolderWriteCapability.BrowserUnsupported, new FolderSample(Files: [], Kinds: []));
 }

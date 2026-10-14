@@ -29,12 +29,12 @@ using Microsoft.JSInterop;
 /// pick-error notice. The per-extension <i>count</i> caps
 /// (<see cref="FolderPickLimits.MaxFileCounts"/>) instead <b>truncate</b>: they
 /// are applied JS-side, where the extension is known before any transfer, and
-/// what they left behind rides back as
-/// <see cref="FolderPickOutcome.Truncations"/> for the host to report. This
-/// type's part in that is to hand the caps table down and map the reply — it
-/// holds no cap logic of its own. The per-file byte transfer additionally
-/// passes the byte cap to <see cref="IJSStreamReference.OpenReadStreamAsync"/>
-/// as a belt-and-braces bound on what actually crosses the boundary.
+/// the module's per-kind account of what it found and admitted rides back as
+/// <see cref="FolderSample.Kinds"/> for the host to report. This type's part in
+/// that is to hand the caps table down and map the reply — it holds no cap
+/// logic of its own. The per-file byte transfer additionally passes the byte
+/// cap to <see cref="IJSStreamReference.OpenReadStreamAsync"/> as a
+/// belt-and-braces bound on what actually crosses the boundary.
 /// </para>
 /// </summary>
 public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
@@ -66,7 +66,7 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     ///
     /// <para>
     /// <b>Why written by hand.</b> The order is the table's contract and the
-    /// module's left-behind report reads in it, so the wire has to carry it —
+    /// module's per-kind report reads in it, so the wire has to carry it —
     /// and <see cref="Utf8JsonWriter"/> writes members in exactly the order it
     /// is told, with no reflection for a trim to break. The JS side keeps it:
     /// <c>JSON.parse</c> creates properties in text order, and
@@ -131,24 +131,24 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
 
     /// <summary>
     /// The enumeration result: the picked folder's top-level matching files,
-    /// metadata only, already truncated to the caps table this call passed in —
-    /// plus <see cref="JsOmittedFiles"/> for whatever that truncation dropped.
+    /// metadata only, already drawn down to the caps table this call passed in —
+    /// plus one <see cref="JsDrawnKind"/> per kind of that table.
     /// </summary>
-    internal sealed record JsEnumerateResult(JsPickedFile[] Files, JsOmittedFiles[] Omitted);
+    internal sealed record JsEnumerateResult(JsPickedFile[] Files, JsDrawnKind[] Kinds);
 
     /// <summary>The fallback-collection result — no status (nothing to cancel) and no writable claim.</summary>
-    internal sealed record JsFallbackResult(string DirectoryName, JsPickedFile[] Files, JsOmittedFiles[] Omitted);
+    internal sealed record JsFallbackResult(string DirectoryName, JsPickedFile[] Files, JsDrawnKind[] Kinds);
 
     /// <summary>One enumerated file's metadata, before its bytes are pulled.</summary>
     internal sealed record JsPickedFile(string Name, long Size);
 
     /// <summary>
-    /// One kind's left-behind count as the module reports it. The <i>cap</i> is
-    /// not on the wire: it came from this side in the first place, so
-    /// <see cref="ToTruncations"/> derives it back rather than trusting a
+    /// One kind's found and admitted counts as the module reports them. The
+    /// <i>cap</i> is not on the wire: it came from this side in the first place,
+    /// so <see cref="ToKinds"/> derives it back rather than trusting a
     /// round-tripped copy.
     /// </summary>
-    internal sealed record JsOmittedFiles(string Extension, int OmittedCount);
+    internal sealed record JsDrawnKind(string Extension, int FoundCount, int AdmittedCount);
 
     private Task<IJSObjectReference> ModuleAsync() =>
         _module ??= _js.InvokeAsync<IJSObjectReference>("import", ModulePath).AsTask();
@@ -209,10 +209,11 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         var enumerated = await InvokeDtoAsync(
             module, "enumeratePicked", BgFolderAccessJsonContext.Default.JsEnumerateResult,
             _wireCaps);
+        var kinds = ToKinds(enumerated.Kinds);
         var files = await BufferFilesAsync(module, enumerated.Files);
         var capability = start.Writable ? FolderWriteCapability.Enabled : FolderWriteCapability.PermissionDenied;
         return new FolderPickOutcome(
-            Cancelled: false, start.DirectoryName, files, capability, ToTruncations(enumerated.Omitted));
+            Cancelled: false, start.DirectoryName, capability, new FolderSample(files, kinds));
     }
 
     /// <inheritdoc/>
@@ -229,23 +230,56 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         var result = await InvokeDtoAsync(
             module, "collectFallbackFiles", BgFolderAccessJsonContext.Default.JsFallbackResult,
             fallbackInput, _wireCaps);
+        var kinds = ToKinds(result.Kinds);
         var files = await BufferFilesAsync(module, result.Files);
         return new FolderPickOutcome(
-            Cancelled: false, result.DirectoryName, files, FolderWriteCapability.BrowserUnsupported,
-            ToTruncations(result.Omitted));
+            Cancelled: false, result.DirectoryName, FolderWriteCapability.BrowserUnsupported,
+            new FolderSample(files, kinds));
     }
 
     /// <summary>
-    /// Map the module's per-kind left-behind report into
-    /// <see cref="PickTruncation"/>s — the module's one shape for both
-    /// mechanisms, so this mapping is written once. Order is the module's, which
-    /// is <see cref="FolderPickLimits.MaxFileCounts"/>'s, so a multi-kind notice
-    /// reads the same way every time. This is the one construction site of a
-    /// reported truncation, and where its cap figure is derived from the
-    /// enforced table rather than trusted off the wire.
+    /// Map the module's per-kind report into <see cref="SampledKind"/>s — the
+    /// module's one shape for both mechanisms, so this mapping is written once,
+    /// and the one construction site of a reported kind. Each kind's cap is
+    /// taken from the enforced table's entry at the same position, never off
+    /// the wire, so the figure a host states is the figure the draw enforced.
+    /// Called before any bytes move, so a malformed report costs no transfer.
     /// </summary>
-    private ImmutableArray<PickTruncation> ToTruncations(JsOmittedFiles[] omitted) =>
-        [.. omitted.Select(o => new PickTruncation(o.Extension, o.OmittedCount, _limits.MaxFileCountFor(o.Extension)))];
+    /// <exception cref="JsonException">
+    /// The report is not one entry per kind of
+    /// <see cref="FolderPickLimits.MaxFileCounts"/>, in the table's order — a
+    /// wire-contract violation by the shipped module, since the table it was
+    /// handed is what it reports over.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A kind's counts are ones <see cref="SampledKind"/> refuses (more
+    /// admitted than found or than the cap) — the same violation, caught by
+    /// the record's own validation rather than restated here.
+    /// </exception>
+    private ImmutableArray<SampledKind> ToKinds(JsDrawnKind[] drawn)
+    {
+        var table = _limits.MaxFileCounts;
+        if (drawn.Length != table.Length)
+        {
+            throw new JsonException(
+                $"The module reported {drawn.Length} kinds for a caps table of {table.Length}.");
+        }
+
+        var kinds = ImmutableArray.CreateBuilder<SampledKind>(table.Length);
+        for (var i = 0; i < table.Length; i++)
+        {
+            var (extension, maxFileCount) = table[i];
+            if (!string.Equals(drawn[i].Extension, extension, StringComparison.Ordinal))
+            {
+                throw new JsonException(
+                    $"The module reported '{drawn[i].Extension}' where the caps table's entry {i} is '{extension}'.");
+            }
+
+            kinds.Add(new SampledKind(extension, drawn[i].FoundCount, drawn[i].AdmittedCount, maxFileCount));
+        }
+
+        return kinds.MoveToImmutable();
+    }
 
     /// <inheritdoc/>
     public async ValueTask<bool> PromoteToActiveAsync()

@@ -63,7 +63,11 @@ using Microsoft.AspNetCore.Components;
 /// is a <c>null</c> read, a named file the browser won't write is
 /// <see cref="PickedFileWritability.NotWritable"/>. Unexpected browser
 /// failures surface as <see cref="Microsoft.JSInterop.JSException"/> for
-/// callers to catch and degrade on.
+/// callers to catch and degrade on. Two exceptions are deliberate and kept
+/// apart: a drawn file over the byte cap is a
+/// <see cref="PickedFileTooLargeException"/>, a fact about the folder for a
+/// host to report; a draw with no folder held is an
+/// <see cref="InvalidOperationException"/>, a caller error.
 /// </para>
 /// </summary>
 public interface IFolderAccess
@@ -95,13 +99,17 @@ public interface IFolderAccess
     /// raises and paints their busy state.
     /// <b>Not</b> invoked for a cancelled pick — there is no work to report.
     /// </param>
-    /// <exception cref="InvalidOperationException">
+    /// <exception cref="PickedFileTooLargeException">
     /// A drawn file is larger than the configured
-    /// <see cref="FolderPickLimits.MaxFileBytes"/>. A folder past the
-    /// <i>count</i> caps does not throw — it truncates per kind and reports it
-    /// (<see cref="FolderSample.Kinds"/>). Also thrown if
+    /// <see cref="FolderPickLimits.MaxFileBytes"/> — by its enumerated size,
+    /// before any byte moves, or by the length its bytes arrive at, if it grew
+    /// after the draw. A folder past the <i>count</i> caps does not throw — it
+    /// truncates per kind and reports it (<see cref="FolderSample.Kinds"/>).
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
     /// <see cref="ClearPickedAsync"/> released the folder while
-    /// <paramref name="onPickAccepted"/> was awaited, leaving nothing to draw.
+    /// <paramref name="onPickAccepted"/> was awaited, leaving nothing to draw —
+    /// a caller error, never a property of the folder.
     /// </exception>
     Task<FolderPickOutcome> PickFolderAsync(Func<Task> onPickAccepted);
 
@@ -124,12 +132,15 @@ public interface IFolderAccess
     /// yields no writable handle. An empty FileList is a non-cancelled outcome
     /// with zero files.
     /// </summary>
-    /// <exception cref="InvalidOperationException">
+    /// <exception cref="PickedFileTooLargeException">
     /// A drawn file is larger than the configured
-    /// <see cref="FolderPickLimits.MaxFileBytes"/> (the count caps truncate
-    /// rather than throw — see <see cref="PickFolderAsync"/>); or
+    /// <see cref="FolderPickLimits.MaxFileBytes"/>, by its size or by the length
+    /// its bytes arrive at, as for <see cref="PickFolderAsync"/> (the count caps
+    /// truncate rather than throw).
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
     /// <see cref="ClearPickedAsync"/> released the folder between the collection
-    /// and the draw.
+    /// and the draw — a caller error.
     /// </exception>
     Task<FolderPickOutcome> CollectFallbackAsync(ElementReference fallbackInput);
 
@@ -173,9 +184,14 @@ public interface IFolderAccess
     /// <exception cref="InvalidOperationException">
     /// No folder is held — never picked, or released by
     /// <see cref="ClearPickedAsync"/> (see the type remarks). A caller error:
-    /// offer a resample only while a folder is held. Also thrown, as for a
-    /// pick, when a drawn file is larger than the configured
-    /// <see cref="FolderPickLimits.MaxFileBytes"/>, before any byte moves.
+    /// offer a resample only while a folder is held.
+    /// </exception>
+    /// <exception cref="PickedFileTooLargeException">
+    /// As for a pick, a drawn file is larger than the configured
+    /// <see cref="FolderPickLimits.MaxFileBytes"/> — by its size, before any
+    /// byte moves, or by the length its bytes arrive at, if it grew since the
+    /// draw. Not an <see cref="InvalidOperationException"/>, so a host handling
+    /// it does not also catch the caller error above.
     /// </exception>
     /// <exception cref="Microsoft.JSInterop.JSException">
     /// The walk was refused — the folder's permission withdrawn, or the folder

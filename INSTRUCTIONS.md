@@ -46,7 +46,8 @@ components. Three areas:
   found and admitted counts; `FolderWriteCapability`, the pick-time
   write-capability taxonomy; `PickedFileWritability`, one named file's
   writability as the setup-time probe answers it; `FolderPickLimits`, the host-supplied caps
-  configuration, validated at construction.
+  configuration, validated at construction; `PickedFileTooLargeException`,
+  the one exception for a drawn file over the byte cap.
 - **The JS module** — `wwwroot/js/folderAccess.js`, the ES module shipped as
   a static web asset: both pick mechanisms, the one draw they and Resample
   share, and the two-slot state, with directory handles that never cross
@@ -158,10 +159,15 @@ library ships **no numbers** — each host's values encode its own cost model
   knob: the table is host-owned *numbers*, and how a cap picks its survivors is
   library enforcement. Files still come back in folder order, and a pick under
   every cap is unchanged from a pick that never sampled.
-- The **byte cap fails the whole pick or resample**
-  (`InvalidOperationException` from `JsFolderAccess`, checked against the
-  drawn files' metadata before any transfer) and is re-asserted as
-  `OpenReadStreamAsync(maxAllowedSize:)` on the actual bytes.
+- The **byte cap fails the whole pick or resample** with a
+  `PickedFileTooLargeException` (`FileName`, `FileSize`, `MaxFileBytes`), at
+  two enforcement points with one rule (`JsFolderAccess.RequireWithinByteCap`):
+  every drawn file's metadata before any transfer, and each file's
+  `IJSStreamReference.Length` before its stream opens — larger than the
+  metadata only if the file grew after the draw. The cap also stays the
+  stream's own bound, `OpenReadStreamAsync(maxAllowedSize:)`; the length
+  check runs first so the condition never surfaces as that call's
+  `ArgumentOutOfRangeException`.
 - Each `SampledKind.MaxFileCount` is **derived** from the enforced
   `FolderPickLimits` instance at the one lib-side construction site
   (`JsFolderAccess.ToKinds`, which takes it from the table entry at the same
@@ -189,11 +195,21 @@ Expected outcomes are values, never exceptions: a pick that ended with no
 folder is `FolderPickOutcome.Cancelled`, a write denial is
 `FolderWriteCapability.PermissionDenied`, a missing named file is a `null`
 read. Unexpected browser failures surface as `JSException` for hosts to catch
-and degrade on. Two throws are deliberate, both `InvalidOperationException`:
-the byte cap above, and a draw with no folder held — the module answers
-`noFolder` and `DrawSampleAsync` throws, which is the caller error
-`ResampleAsync` documents (and what a pick throws if `ClearPickedAsync`
-released its folder while its hook was awaited).
+and degrade on. Two throws are deliberate, and of different types so that
+handling one never catches the other:
+
+- **A drawn file over the byte cap** — `PickedFileTooLargeException`, from
+  either enforcement point above, on every pick, fallback collection and
+  resample. A fact about the folder the user chose, for the host to report.
+  It derives from `Exception` directly, never from `InvalidOperationException`.
+- **A draw with no folder held** — `InvalidOperationException`: the module
+  answers `noFolder` and `DrawSampleAsync` throws. The caller error
+  `ResampleAsync` documents, and what a pick throws if `ClearPickedAsync`
+  released its folder while its hook was awaited.
+
+Nothing else is translated: an `ArgumentOutOfRangeException` that is not the
+byte cap (say, the runtime refusing a zero-length stream reference — see
+Pitfalls) surfaces as itself.
 
 The writability probe (`ProbePickedFileWritabilityAsync`, halheinrich/backgammon#261)
 answers `PickedFileWritability` values the same way. A missing file is
@@ -304,10 +320,11 @@ ValueTask ClearPickedAsync();                                    // picked slot 
 draw and buffering — the host's one truthful place to raise a busy
 affordance (see Pitfalls). `ResampleAsync` takes no hook: it shows no prompt,
 so the host raises its busy affordance before calling. It throws
-`InvalidOperationException` when no folder is held (a caller error) or a drawn
-file is over the byte cap, and `JSException` when the walk is refused or a
-read fails; either way it returns no part of a sample and leaves everything
-held as it was. File-name constants stay host-side; the slot file I/O is
+`InvalidOperationException` when no folder is held (a caller error),
+`PickedFileTooLargeException` when a drawn file is over the byte cap (as the
+two pick operations do), and `JSException` when the walk is refused or a read
+fails; either way it returns no part of a sample and leaves everything held
+as it was. File-name constants stay host-side; the slot file I/O is
 name-parameterized by design.
 
 ### `FolderPickLimits`
@@ -358,6 +375,27 @@ its sample, so a test compares their members. The array members refuse a
 member); "none" is an empty `[]`. `SampledKind`'s constructor refuses a
 negative count, a non-positive cap, and an admitted count past the found count
 or the cap (`ArgumentOutOfRangeException`).
+
+### `PickedFileTooLargeException`
+
+```csharp
+sealed class PickedFileTooLargeException : Exception                // not an InvalidOperationException
+{
+    PickedFileTooLargeException(string fileName, long fileSize, FolderPickLimits limits);
+    string FileName { get; }
+    long FileSize { get; }                                          // as the failing check saw it
+    long MaxFileBytes { get; }                                      // limits.MaxFileBytes
+}
+```
+
+Thrown by `PickFolderAsync`, `CollectFallbackAsync` and `ResampleAsync` for a
+drawn file over the byte cap. The message — `'<name>' is larger than the
+<N> MB per-file limit.`, with `N` the limits' `MaxFileMegabytes` — is the
+wording the cap's earlier `InvalidOperationException` carried. The one
+constructor is public so a host's test fake can throw the real thing; it
+refuses a size the cap does not exceed, and the standard parameterless,
+message and inner-exception constructors are deliberately absent, since each
+would claim an exceeded cap without saying which file or which cap.
 
 ## Pitfalls
 
@@ -444,6 +482,24 @@ it re-opens a closed trap.
   before any transfer. Don't "unify" them either way: truncating on bytes
   would silently drop a file the user can see, and throwing on counts
   re-opens the lose-the-whole-pick failure the truncation contract closed.
+- **The byte cap has one exception, and it is not `InvalidOperationException`.**
+  `InvalidOperationException` is the caller error (no folder held); a host
+  that catches the cap's exception to report an oversized file must not also
+  swallow its own bug, which is why `PickedFileTooLargeException` derives from
+  `Exception` (pinned by `PickedFileTooLargeExceptionTests`). Both enforcement
+  points throw it through `RequireWithinByteCap`. Keep the stream-length
+  check *before* `OpenReadStreamAsync`: after it, the same condition would
+  arrive as the runtime's `ArgumentOutOfRangeException`, and don't "fix" that
+  by catching and translating `ArgumentOutOfRangeException` — other failures
+  wear that type too (`AnArgumentOutOfRangeFrom…_IsNotTranslated`).
+- **A zero-byte matching file fails the pick — read off the runtime's
+  sources, not observed in a browser.** In dotnet/aspnetcore v10.0.12 the
+  stream-reference converter builds a `JSStreamReference`, whose constructor
+  refuses a length that is not positive with an `ArgumentOutOfRangeException`
+  (`JSStreamReference.cs`, lines 22–27). So `readFileData` for an empty file
+  would throw before this side holds a reference to release. It is
+  surfaced untranslated, as it should be; whether an empty file should instead
+  buffer as empty bytes is an open question, not decided here.
 - **The report covers every kind, and `SampledKind.MaxFileCount` is derived,
   never round-tripped.** Don't trim the report back to the kinds a cap cut
   short: "is this the only sample the limits could draw?" is answered by

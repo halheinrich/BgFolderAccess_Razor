@@ -154,11 +154,14 @@ public sealed class FolderPickLimits
     public ImmutableArray<KeyValuePair<string, int>> MaxFileCounts { get; }
 
     /// <summary>
-    /// Per-file size cap in bytes. Enforced at pick time by
-    /// <see cref="JsFolderAccess"/>: checked against the enumerated metadata up
-    /// front (an oversized file fails the whole pick), and re-asserted as the
-    /// <c>IJSStreamReference.OpenReadStreamAsync</c> <c>maxAllowedSize</c> on
-    /// the actual transfer.
+    /// Per-file size cap in bytes. Enforced on every pick and resample by
+    /// <see cref="JsFolderAccess"/>, at two points with one outcome: checked
+    /// against each drawn file's metadata up front, and against the length its
+    /// bytes are handed over at, before the stream opens. An oversized file
+    /// fails the whole pick or resample with a
+    /// <see cref="PickedFileTooLargeException"/>. The cap also bounds the
+    /// stream itself, as <c>IJSStreamReference.OpenReadStreamAsync</c>'s
+    /// <c>maxAllowedSize</c>.
     /// </summary>
     public long MaxFileBytes { get; }
 

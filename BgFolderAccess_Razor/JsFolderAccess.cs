@@ -22,19 +22,22 @@ using Microsoft.JSInterop;
 /// </para>
 ///
 /// <para>
-/// Caps are enforced against the pick's metadata, <i>before</i> any bytes move,
+/// Caps are enforced against the draw's metadata, <i>before</i> any bytes move,
 /// and the two caps end differently. A file larger than
-/// <see cref="FolderPickLimits.MaxFileBytes"/> fails the whole pick here with
-/// an <see cref="InvalidOperationException"/> for the host to surface as its
-/// pick-error notice. The per-extension <i>count</i> caps
-/// (<see cref="FolderPickLimits.MaxFileCounts"/>) instead <b>truncate</b>: they
-/// are applied JS-side, where the extension is known before any transfer, and
-/// the module's per-kind account of what it found and admitted rides back as
-/// <see cref="FolderSample.Kinds"/> for the host to report. This type's part in
-/// that is to hand the caps table down and map the reply — it holds no cap
-/// logic of its own. The per-file byte transfer additionally passes the byte
-/// cap to <see cref="IJSStreamReference.OpenReadStreamAsync"/> as a
-/// belt-and-braces bound on what actually crosses the boundary.
+/// <see cref="FolderPickLimits.MaxFileBytes"/> fails the whole pick or
+/// resample here with a <see cref="PickedFileTooLargeException"/> for the host
+/// to surface as its pick-error notice — and so does a file whose bytes arrive
+/// longer than that, having grown after the draw, which is checked against the
+/// stream reference's length before the stream opens. The per-extension
+/// <i>count</i> caps (<see cref="FolderPickLimits.MaxFileCounts"/>) instead
+/// <b>truncate</b>: they are applied JS-side, where the extension is known
+/// before any transfer, and the module's per-kind account of what it found
+/// and admitted rides back as <see cref="FolderSample.Kinds"/> for the host to
+/// report. This type's part in that is to hand the caps table down and map the
+/// reply — it holds no count-cap logic of its own. The per-file byte transfer
+/// additionally passes the byte cap to
+/// <see cref="IJSStreamReference.OpenReadStreamAsync"/> as a belt-and-braces
+/// bound on what actually crosses the boundary.
 /// </para>
 /// </summary>
 public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
@@ -264,9 +267,10 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     /// reads change none of its state (see <c>drawPicked</c>).
     /// </para>
     /// </summary>
-    /// <exception cref="InvalidOperationException">
-    /// The module held no folder to draw from; or a drawn file is larger than
-    /// <see cref="FolderPickLimits.MaxFileBytes"/>.
+    /// <exception cref="InvalidOperationException">The module held no folder to draw from.</exception>
+    /// <exception cref="PickedFileTooLargeException">
+    /// A drawn file is larger than <see cref="FolderPickLimits.MaxFileBytes"/>
+    /// (see <see cref="BufferFilesAsync"/>).
     /// </exception>
     /// <exception cref="JsonException">The reply's status is not one the module ships.</exception>
     private async Task<FolderSample> DrawSampleAsync(IJSObjectReference module)
@@ -415,21 +419,23 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
     }
 
     /// <summary>
-    /// Pull every enumerated file's bytes across the boundary into
+    /// Pull every drawn file's bytes across the boundary into
     /// <see cref="PickedFile"/>s, size-checking the metadata first so an
-    /// oversized file fails fast before any transfer starts. The count caps have
-    /// already been applied JS-side — what arrives here is what the pick took.
+    /// oversized file fails fast before any transfer starts, and each file
+    /// again by the length its bytes arrive at. Every stream reference is
+    /// released, whichever way its file's turn ends. The count caps have
+    /// already been applied JS-side — what arrives here is what the draw took.
     /// </summary>
+    /// <exception cref="PickedFileTooLargeException">
+    /// A file is over <see cref="FolderPickLimits.MaxFileBytes"/>, by its
+    /// metadata or by the length its bytes were handed over at.
+    /// </exception>
     private async Task<ImmutableArray<PickedFile>> BufferFilesAsync(
         IJSObjectReference module, JsPickedFile[] metadata)
     {
         foreach (var file in metadata)
         {
-            if (file.Size > _limits.MaxFileBytes)
-            {
-                throw new InvalidOperationException(
-                    $"'{file.Name}' is larger than the {_limits.MaxFileMegabytes} MB per-file limit.");
-            }
+            RequireWithinByteCap(file.Name, file.Size);
         }
 
         var picked = ImmutableArray.CreateBuilder<PickedFile>(metadata.Length);
@@ -450,6 +456,15 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
             // releases it once the copy is done, and on any failure to open or
             // copy; declared first, it is released last, after the stream.
             await using var streamRef = await module.InvokeAsync<IJSStreamReference>("readFileData", file.Name);
+
+            // The cap's second enforcement point: the length the bytes are
+            // actually handed over at, which exceeds the draw's metadata only
+            // if the file grew in between. Checked here, before opening, so
+            // the condition surfaces as the cap's own exception —
+            // OpenReadStreamAsync would refuse the same length with an
+            // ArgumentOutOfRangeException (JSStreamReference, v10.0.12), which
+            // is not translated: maxAllowedSize stays as the stream's bound.
+            RequireWithinByteCap(file.Name, streamRef.Length);
             await using var stream = await streamRef.OpenReadStreamAsync(
                 maxAllowedSize: _limits.MaxFileBytes);
             using var ms = new MemoryStream();
@@ -466,6 +481,21 @@ public sealed class JsFolderAccess : IFolderAccess, IAsyncDisposable
         // One slot per metadata entry, all filled: the builder's array becomes
         // the outcome's without a copy, and the builder keeps none of it.
         return picked.MoveToImmutable();
+    }
+
+    /// <summary>
+    /// The per-file byte cap, as one rule for both places
+    /// <see cref="BufferFilesAsync"/> enforces it: a file of
+    /// <paramref name="size"/> bytes passes only within
+    /// <see cref="FolderPickLimits.MaxFileBytes"/>.
+    /// </summary>
+    /// <exception cref="PickedFileTooLargeException">The file is over the cap.</exception>
+    private void RequireWithinByteCap(string fileName, long size)
+    {
+        if (size > _limits.MaxFileBytes)
+        {
+            throw new PickedFileTooLargeException(fileName, size, _limits);
+        }
     }
 
     /// <inheritdoc/>

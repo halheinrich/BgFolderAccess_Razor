@@ -635,9 +635,23 @@ public class JsFolderAccessTests : BunitContext
             new JsFolderAccess.JsPickedFile("huge.xg", Limits.MaxFileBytes + 1));
         var sut = CreateSut();
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(
             () => sut.PickFolderAsync(NoHook));
-        Assert.Contains("huge.xg", ex.Message);
+        AssertOverTheCap(ex, "huge.xg", Limits.MaxFileBytes + 1);
+    }
+
+    /// <summary>
+    /// <paramref name="ex"/> reports <paramref name="fileName"/> at
+    /// <paramref name="fileSize"/> bytes against <see cref="Limits"/>' cap, and
+    /// its message states the derived MB figure, so prose and enforced rule
+    /// cannot drift.
+    /// </summary>
+    private static void AssertOverTheCap(PickedFileTooLargeException ex, string fileName, long fileSize)
+    {
+        Assert.Equal(fileName, ex.FileName);
+        Assert.Equal(fileSize, ex.FileSize);
+        Assert.Equal(Limits.MaxFileBytes, ex.MaxFileBytes);
+        Assert.Contains(fileName, ex.Message);
         Assert.Contains($"{Limits.MaxFileMegabytes} MB", ex.Message);
     }
 
@@ -815,9 +829,8 @@ public class JsFolderAccessTests : BunitContext
             new JsFolderAccess.JsPickedFile("huge.xg", Limits.MaxFileBytes + 1));
         var sut = CreateSut();
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ResampleAsync());
-        Assert.Contains("huge.xg", ex.Message);
-        Assert.Contains($"{Limits.MaxFileMegabytes} MB", ex.Message);
+        var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(() => sut.ResampleAsync());
+        AssertOverTheCap(ex, "huge.xg", Limits.MaxFileBytes + 1);
     }
 
     [Fact]
@@ -902,12 +915,41 @@ public class JsFolderAccessTests : BunitContext
     // whole file's bytes alive in the browser for the life of the tab, and a
     // resample adds a whole sample's worth each time.
 
-    /// <summary>Script one file's draw and its byte read, for the release tests.</summary>
-    private static FakeJsStreamReference SetupOneFileRead(BunitJSModuleInterop module, FakeJsStreamReference read)
+    /// <summary>
+    /// Buffer one file, <c>a.xg</c> (3 bytes by its metadata), read through
+    /// <paramref name="read"/>, by <paramref name="operation"/> — <c>"pick"</c>,
+    /// <c>"fallback"</c> or <c>"resample"</c>: the three operations that reach
+    /// the one buffering path.
+    /// </summary>
+    private async Task<FolderSample> BufferOneFileAsync(string operation, FakeJsStreamReference read)
     {
-        SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xg", 3));
+        var module = JSInterop.SetupModule(ModulePath);
+        var file = new JsFolderAccess.JsPickedFile("a.xg", 3);
+        switch (operation)
+        {
+            case "pick":
+                SetupBeginPick(module, "ok", "Corpus", true);
+                SetupDraw(module, file);
+                break;
+            case "fallback":
+                SetupCollectFallback(module, "Corpus", [file], WholeDraw(Limits, file));
+                break;
+            case "resample":
+                SetupDraw(module, file);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(operation), operation, "Not an operation that buffers.");
+        }
+
         module.Setup<IJSStreamReference>("readFileData", _ => true).SetResult(read);
-        return read;
+        var sut = CreateSut();
+
+        return operation switch
+        {
+            "pick" => (await sut.PickFolderAsync(NoHook)).Sample,
+            "fallback" => (await sut.CollectFallbackAsync(default)).Sample,
+            _ => await sut.ResampleAsync(),
+        };
     }
 
     [Theory]
@@ -919,32 +961,9 @@ public class JsFolderAccessTests : BunitContext
         // The one buffering path, through each of the three operations that
         // reach it: the reference is disposed exactly once, after the copy,
         // and the stream it opened is disposed too.
-        var module = JSInterop.SetupModule(ModulePath);
         var read = new FakeJsStreamReference([1, 2, 3]);
-        switch (operation)
-        {
-            case "pick":
-                SetupBeginPick(module, "ok", "Corpus", true);
-                SetupOneFileRead(module, read);
-                break;
-            case "fallback":
-                var file = new JsFolderAccess.JsPickedFile("a.xg", 3);
-                SetupCollectFallback(module, "Corpus", [file], WholeDraw(Limits, file));
-                module.Setup<IJSStreamReference>("readFileData", _ => true).SetResult(read);
-                break;
-            default:
-                SetupOneFileRead(module, read);
-                break;
-        }
 
-        var sut = CreateSut();
-
-        var sample = operation switch
-        {
-            "pick" => (await sut.PickFolderAsync(NoHook)).Sample,
-            "fallback" => (await sut.CollectFallbackAsync(default)).Sample,
-            _ => await sut.ResampleAsync(),
-        };
+        var sample = await BufferOneFileAsync(operation, read);
 
         Assert.Equal<byte>([1, 2, 3], Assert.Single(sample.Files).Bytes);
         Assert.Equal(1, read.DisposeCount);
@@ -954,12 +973,9 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task BufferedFile_StreamReferenceIsReleased_WhenOpeningTheStreamFails()
     {
-        var module = JSInterop.SetupModule(ModulePath);
-        var read = SetupOneFileRead(
-            module, new FakeJsStreamReference([1, 2, 3]) { OpenFailure = new JSException("The stream could not be opened.") });
-        var sut = CreateSut();
+        var read = new FakeJsStreamReference([1, 2, 3]) { OpenFailure = new JSException("The stream could not be opened.") };
 
-        await Assert.ThrowsAsync<JSException>(() => sut.ResampleAsync());
+        await Assert.ThrowsAsync<JSException>(() => BufferOneFileAsync("resample", read));
 
         Assert.Equal(1, read.DisposeCount);
         Assert.Empty(read.OpenedStreams);
@@ -971,13 +987,82 @@ public class JsFolderAccessTests : BunitContext
         // Two of the three bytes cross, then the transfer breaks off: the
         // failure surfaces unchanged, and both the stream and the reference
         // behind it are released.
-        var module = JSInterop.SetupModule(ModulePath);
-        var read = SetupOneFileRead(module, new FakeJsStreamReference([1, 2, 3]) { FailAfterBytes = 2 });
-        var sut = CreateSut();
+        var read = new FakeJsStreamReference([1, 2, 3]) { FailAfterBytes = 2 };
 
-        await Assert.ThrowsAsync<IOException>(() => sut.ResampleAsync());
+        await Assert.ThrowsAsync<IOException>(() => BufferOneFileAsync("resample", read));
 
         Assert.Equal(1, read.DisposeCount);
         Assert.True(Assert.Single(read.OpenedStreams).Disposed);
+    }
+
+    // The byte cap's second enforcement point, and what it must not swallow.
+
+    [Theory]
+    [InlineData("pick")]
+    [InlineData("fallback")]
+    [InlineData("resample")]
+    public async Task AFileThatGrewPastTheCapAfterTheDraw_ThrowsTheCapsException_AndReleasesItsReference(string operation)
+    {
+        // Within the cap by its metadata, over it by the length its bytes are
+        // handed over at: the same exception as the metadata check, with the
+        // size the second check saw. The stream is never opened, so the
+        // runtime's own ArgumentOutOfRangeException for that length (which
+        // the fake reproduces) never arises — and the reference is released.
+        var read = new FakeJsStreamReference([1, 2, 3]) { Length = Limits.MaxFileBytes + 1 };
+
+        var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(() => BufferOneFileAsync(operation, read));
+
+        AssertOverTheCap(ex, "a.xg", Limits.MaxFileBytes + 1);
+        Assert.Equal(1, read.DisposeCount);
+        Assert.Empty(read.OpenedStreams);
+    }
+
+    [Fact]
+    public async Task AFileExactlyAtTheCap_IsBuffered()
+    {
+        // The cap is inclusive at both checks: a length equal to it passes.
+        var read = new FakeJsStreamReference([1, 2, 3]) { Length = Limits.MaxFileBytes };
+
+        var sample = await BufferOneFileAsync("resample", read);
+
+        Assert.Equal("a.xg", Assert.Single(sample.Files).FileName);
+        Assert.Equal(1, read.DisposeCount);
+    }
+
+    [Fact]
+    public async Task AnArgumentOutOfRangeFromOpeningTheStream_IsNotTranslated()
+    {
+        // Within the cap, the stream fails to open for some other reason that
+        // happens to be an ArgumentOutOfRangeException: it is not the byte cap
+        // and is not reported as one. The reference is still released.
+        var read = new FakeJsStreamReference([1, 2, 3])
+        {
+            OpenFailure = new ArgumentOutOfRangeException("offset", "Something else entirely."),
+        };
+
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => BufferOneFileAsync("resample", read));
+
+        Assert.Equal("offset", ex.ParamName);
+        Assert.Equal(1, read.DisposeCount);
+    }
+
+    [Fact]
+    public async Task AnArgumentOutOfRangeFromReadingTheReference_IsNotTranslated()
+    {
+        // The runtime's reference converter builds a JSStreamReference, whose
+        // constructor refuses a length that is not positive with an
+        // ArgumentOutOfRangeException (dotnet/aspnetcore v10.0.12,
+        // JSStreamReference.cs, lines 22-27) — so readFileData itself can fail
+        // that way, before this side holds any reference. That surfaces
+        // unchanged: it is not a file over the cap.
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xg", 3));
+        module.Setup<IJSStreamReference>("readFileData", _ => true)
+            .SetException(new ArgumentOutOfRangeException("totalLength", 0L, "Length must be a positive value."));
+        var sut = CreateSut();
+
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => sut.ResampleAsync());
+
+        Assert.Equal("totalLength", ex.ParamName);
     }
 }

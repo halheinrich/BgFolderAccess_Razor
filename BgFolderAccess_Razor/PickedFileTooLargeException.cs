@@ -17,7 +17,7 @@ namespace BgFolderAccess_Razor;
 ///
 /// <para>
 /// <b>Not an <see cref="InvalidOperationException"/>, deliberately.</b> That
-/// type is what <see cref="IFolderAccess.ResampleAsync"/> (and a pick whose
+/// type is what <see cref="IFolderContext.ResampleAsync"/> (and a pick whose
 /// folder was released part-way) throws for "no folder is held" — a caller
 /// bug. A file over the cap is a property of the folder the user chose,
 /// something a host reports, so a host catching this one must not catch its

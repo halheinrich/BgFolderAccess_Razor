@@ -20,9 +20,38 @@ public class FolderPickOutcomeTests
         var outcome = FolderPickOutcome.CancelledOutcome;
 
         Assert.True(outcome.Cancelled);
-        Assert.Equal("", outcome.DirectoryName);
+        Assert.Null(outcome.Folder);
         Assert.Empty(outcome.Sample.Files);
         Assert.Empty(outcome.Sample.Kinds);
+    }
+
+    [Fact]
+    public void Cancelled_IsExactlyHavingNoFolder()
+    {
+        // One fact, derived: an outcome with a folder is not cancelled, and there is no
+        // second flag to disagree with the folder's presence.
+        var outcome = new FolderPickOutcome(new StubFolder(), OneFileSample());
+
+        Assert.False(outcome.Cancelled);
+        Assert.NotNull(outcome.Folder);
+    }
+
+    /// <summary>A context that does nothing: the outcome only carries it.</summary>
+    private sealed class StubFolder : IFolderContext
+    {
+        public string Name => "Corpus";
+
+        public FolderWriteCapability Capability => FolderWriteCapability.Enabled;
+
+        public Task<FolderSample> ResampleAsync() => throw new NotSupportedException();
+
+        public Task<string?> ReadFileAsync(string fileName) => throw new NotSupportedException();
+
+        public Task WriteFileAsync(string fileName, string text) => throw new NotSupportedException();
+
+        public Task<FileWritability> ProbeFileWritabilityAsync(string fileName) => throw new NotSupportedException();
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     [Fact]
@@ -42,8 +71,11 @@ public class FolderPickOutcomeTests
     {
         var sample = OneFileSample();
 
-        var outcome = new FolderPickOutcome(Cancelled: false, "Corpus", FolderWriteCapability.Enabled, sample);
+        var folder = new StubFolder();
 
+        var outcome = new FolderPickOutcome(folder, sample);
+
+        Assert.Same(folder, outcome.Folder);
         Assert.Same(sample, outcome.Sample);
     }
 

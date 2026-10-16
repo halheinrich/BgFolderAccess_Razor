@@ -5,59 +5,35 @@ using Jint.Native;
 namespace BgFolderAccess_Razor.Tests;
 
 /// <summary>
-/// Runs the RCL's shipped <c>folderAccess.js</c> — the real file, staged beside
-/// this assembly by the csproj — inside an in-process JS engine, against one
-/// fake folder, and hands its results back as typed values.
+/// Runs the RCL's shipped <c>folderAccess.js</c> — the real file, staged beside this
+/// assembly by the csproj — inside an in-process JS engine, against one fake folder, and
+/// hands its results back as typed values.
 ///
 /// <para>
-/// <b>Why this exists.</b> The module's count-cap enforcement is the one piece
-/// of genuine algorithm in the library, and it lives in JavaScript, as does the
-/// state a resample must leave alone. Everything else in this suite pins C#,
-/// with bUnit <i>scripting</i> the module's replies — which can only prove
-/// that <see cref="JsFolderAccess"/> maps what it is told, never that the
-/// module computes it. Without an engine here, the draw would be exercised for
-/// the first time in a consuming host's browser suite, one repository away from
-/// the code that owns it.
+/// The module's count-cap draw is the one piece of genuine algorithm in the library, and it
+/// lives in JavaScript, as does the context table a resample and a release act on.
+/// Everything else in this suite pins C#, with bUnit scripting the module's replies, which
+/// can only prove that <see cref="JsFolderAccess"/> maps what it is told. Jint is an engine,
+/// not a browser: these tests prove the module's logic, nothing about the real wire
+/// (pickers, prompts, DOMException mapping, File/ArrayBuffer transfer), which is the
+/// consuming host's e2e suite's.
 /// </para>
 ///
 /// <para>
-/// <b>What this is not.</b> Jint is a JS engine, not a browser. These tests
-/// prove the module's <i>logic</i> — classification, the per-kind draw, result
-/// ordering, how many times it stats a file, and what its slots hold across
-/// calls. They prove nothing about the real wire: actual pickers, permission
-/// prompts, <c>DOMException</c> mapping, <c>File</c>/<c>ArrayBuffer</c>
-/// transfer. That half is still browser-only and still belongs to the consuming
-/// host's e2e suite (see INSTRUCTIONS.md).
-/// </para>
-///
-/// <para>
-/// One instance per test: the module keeps its picked/active slots in module
-/// state, and the harness its fake folder, so a shared engine would leak one
-/// test's pick into the next. Within one instance, calls see each other — which
-/// is what a resample test needs.
-/// </para>
-///
-/// <para>
-/// A rejected or thrown module call surfaces as Jint's own exception (a
-/// <see cref="Jint.JintException"/>), so a test asserts the failure
-/// itself, not a translation of it.
-/// </para>
-///
-/// <para>
-/// Public only because xUnit theories are: <see cref="Mechanism"/> is a
-/// parameter of public <c>[Theory]</c> methods, and C# requires it to be at
-/// least as reachable. Nothing outside this test assembly can see it.
+/// One instance per test: the module keeps its contexts in module state and the harness its
+/// fake folder. Each pick lands a context; the harness remembers the latest
+/// (<see cref="Context"/>) and the <c>…Of</c> members name one explicitly, so a test can hold
+/// two. A rejected or thrown module call surfaces as Jint's own exception
+/// (<see cref="Jint.JintException"/>). Public only because xUnit theories are:
+/// <see cref="Mechanism"/> is a parameter of public <c>[Theory]</c> methods.
 /// </para>
 /// </summary>
 public sealed class FolderAccessModuleHost
 {
-    // Module specifiers: moduleHarness.js does `import ... from 'folderAccess'`,
-    // so the library module has to be registered under exactly that name.
+    // Module specifiers: moduleHarness.js does `import ... from 'folderAccess'`.
     private const string ModuleSpecifier = "folderAccess";
     private const string HarnessSpecifier = "moduleHarness";
 
-    // Read once: the files are a few KB and identical for every test, but each
-    // test still gets its own Engine below.
     private static readonly string ModuleSource = ReadStagedJs("folderAccess.js");
     private static readonly string HarnessSource = ReadStagedJs("moduleHarness.js");
 
@@ -76,53 +52,34 @@ public sealed class FolderAccessModuleHost
 
     /// <summary>
     /// Which pick mechanism a case drives. The count caps are one rule with one
-    /// implementation, so every invariant is asserted against both — that the
-    /// two agree is itself the claim.
+    /// implementation, so every invariant is asserted against both.
     /// </summary>
     public enum Mechanism
     {
-        /// <summary>File System Access: <c>beginPick</c> then <c>drawPicked</c>.</summary>
+        /// <summary>File System Access: <c>beginPick</c> then <c>draw</c>.</summary>
         FileSystemAccess,
 
-        /// <summary>The <c>webkitdirectory</c> fallback: <c>collectFallbackFiles</c> then <c>drawPicked</c>.</summary>
+        /// <summary>The <c>webkitdirectory</c> fallback: <c>collectFallbackFiles</c> then <c>draw</c>.</summary>
         Fallback,
     }
 
-    /// <summary>
-    /// One draw's outcome as the module produced it — a pick's or a resample's.
-    /// </summary>
-    /// <param name="Status">
-    /// <c>"drawn"</c>, or <c>"noFolder"</c> when nothing was held to draw from.
-    /// </param>
-    /// <param name="Files">
-    /// The admitted files' names, in the order the module returned them.
-    /// </param>
-    /// <param name="Kinds">
-    /// The module's per-kind report: one entry per kind of the caps table, in
-    /// the table's order.
-    /// </param>
-    /// <param name="Stats">
-    /// How many times the draw called <c>getFile()</c> — the FS-Access cost
-    /// property. <c>null</c> on <see cref="Mechanism.Fallback"/>, whose Files
-    /// carry their size and have nothing to defer.
-    /// </param>
-    public sealed record DrawResult(
-        string Status, IReadOnlyList<string> Files, IReadOnlyList<DrawnKind> Kinds, int? Stats);
+    /// <summary>One draw's outcome as the module produced it — a pick's or a resample's.</summary>
+    /// <param name="Files">The admitted files' names, in the order the module returned them.</param>
+    /// <param name="Kinds">The module's per-kind report: one entry per kind of the caps table, in the table's order.</param>
+    /// <param name="Stats">How many times the draw called <c>getFile()</c>; <c>null</c> on <see cref="Mechanism.Fallback"/>, whose Files carry their size.</param>
+    public sealed record DrawResult(IReadOnlyList<string> Files, IReadOnlyList<DrawnKind> Kinds, int? Stats);
 
-    /// <summary>
-    /// One kind's found and admitted counts, as they cross the real interop
-    /// wire. Value-equal, so a whole report is asserted in one comparison.
-    /// </summary>
+    /// <summary>One kind's found and admitted counts, as they cross the real interop wire. Value-equal.</summary>
     public sealed record DrawnKind(string Extension, int FoundCount, int AdmittedCount);
 
     /// <summary>The browser calls only a pick may make, counted over the host's life.</summary>
     public sealed record BrowserCalls(int PickerOpenings, int PermissionRequests);
 
     /// <summary>
-    /// Pick a folder whose top-level files are <paramref name="fileNames"/>, in
-    /// that order, against <paramref name="caps"/> — the per-extension count-cap
-    /// table, <b>in its key order</b>, which the per-kind report is required to
-    /// read in. The pick replaces the fake folder's contents.
+    /// Pick a folder whose top-level files are <paramref name="fileNames"/>, in that order,
+    /// against <paramref name="caps"/> — the per-extension count-cap table, in its key
+    /// order. The pick replaces the fake folder's contents and lands a new context, which
+    /// becomes <see cref="Context"/>.
     /// </summary>
     public DrawResult Pick(
         Mechanism mechanism, string[] fileNames, params (string Extension, int Cap)[] caps) =>
@@ -137,22 +94,22 @@ public sealed class FolderAccessModuleHost
             JsonSerializer.Serialize(fileNames),
             WireCaps(caps)));
 
-    /// <summary>
-    /// A File System Access pick the user cancels: the picker rejects with
-    /// <c>AbortError</c>. Answers the module's status, <c>"cancelled"</c>.
-    /// </summary>
+    /// <summary>A File System Access pick the user cancels: the picker rejects with <c>AbortError</c>. Answers the module's status.</summary>
     public string CancelPick() => Call("cancelPick").AsString();
 
-    /// <summary>
-    /// Draw whatever is held again — the module call a resample makes — with
-    /// the caps table crossing again, as it does on every call.
-    /// </summary>
-    public DrawResult Resample(params (string Extension, int Cap)[] caps) =>
-        ReadDraw(Call("drawJson", WireCaps(caps)));
+    /// <summary>The context the latest pick landed.</summary>
+    public int Context => (int)Call("contextId").AsNumber();
+
+    /// <summary>Draw the latest pick's folder again — a resample's module call — with the caps table crossing again.</summary>
+    public DrawResult Resample(params (string Extension, int Cap)[] caps) => ResampleOf(Context, caps);
+
+    /// <summary>Draw the folder held under <paramref name="context"/> again.</summary>
+    public DrawResult ResampleOf(int context, params (string Extension, int Cap)[] caps) =>
+        ReadDraw(Call("drawOfJson", context, WireCaps(caps)));
 
     /// <summary>
-    /// A whole resample as <see cref="JsFolderAccess"/> runs it: the draw, then
-    /// each drawn file's bytes in turn, stopping at the first read that fails.
+    /// A whole resample of the latest pick's folder as <see cref="JsFolderContext"/> runs it:
+    /// the draw, then each drawn file's bytes in turn, stopping at the first read that fails.
     /// Answers <c>"name:byteLength"</c> per file, in order.
     /// </summary>
     public IReadOnlyList<string> ResampleAndBuffer(params (string Extension, int Cap)[] caps) =>
@@ -173,53 +130,46 @@ public sealed class FolderAccessModuleHost
         JsonSerializer.Deserialize<BrowserCalls>(Call("browserCallsJson").AsString(), ResultJson)
             ?? throw new InvalidOperationException("'browserCallsJson' returned no result.");
 
-    /// <summary>The module's <c>readFileData</c> for one name: the byte count read.</summary>
+    /// <summary>The module's <c>readFileData</c> on the latest pick's folder: the byte count read.</summary>
     public int ReadFileData(string name) => (int)Call("readBytes", name).AsNumber();
 
-    /// <summary>The module's <c>clearPicked</c>.</summary>
-    public void Clear() => Call("clear");
+    /// <summary>The module's <c>release</c> of the latest pick's context.</summary>
+    public void Release() => ReleaseOf(Context);
 
-    /// <summary>The module's <c>readPickedFile</c>: the text, or <c>null</c> when absent.</summary>
-    public string? ReadPickedFile(string name) => AsNullableString(Call("readPicked", name));
+    /// <summary>The module's <c>release</c> of <paramref name="context"/>.</summary>
+    public void ReleaseOf(int context) => Call("releaseOf", context);
 
-    /// <summary>The module's <c>writePickedFile</c>.</summary>
-    public void WritePickedFile(string name, string text) => Call("writePicked", name, text);
+    /// <summary>The module's <c>readFile</c> on the latest pick's folder: the text, or <c>null</c> when absent.</summary>
+    public string? ReadFile(string name) => ReadFileOf(Context, name);
 
-    /// <summary>The module's <c>probePickedFileWritability</c>: its answer string.</summary>
-    public string ProbePickedFile(string name) => Call("probePicked", name).AsString();
+    /// <summary>The module's <c>readFile</c> on <paramref name="context"/>.</summary>
+    public string? ReadFileOf(int context, string name) => AsNullableString(Call("readDocOf", context, name));
 
-    /// <summary>The module's <c>promoteToActive</c>.</summary>
-    public bool PromoteToActive() => Call("promote").AsBoolean();
+    /// <summary>The module's <c>writeFile</c> on the latest pick's folder.</summary>
+    public void WriteFile(string name, string text) => WriteFileOf(Context, name, text);
 
-    /// <summary>The module's <c>readActiveFile</c>: the text, or <c>null</c> when absent.</summary>
-    public string? ReadActiveFile(string name) => AsNullableString(Call("readActive", name));
+    /// <summary>The module's <c>writeFile</c> on <paramref name="context"/>.</summary>
+    public void WriteFileOf(int context, string name, string text) => Call("writeDocOf", context, name, text);
+
+    /// <summary>The module's <c>probeFileWritability</c> on the latest pick's folder: its answer string.</summary>
+    public string ProbeFile(string name) => Call("probeDocOf", Context, name).AsString();
 
     /// <summary>
-    /// The caps as the module receives them, through production's own path:
-    /// validated by <see cref="FolderPickLimits"/>, then written by
-    /// <see cref="JsFolderAccess.ToWireCaps"/> — the object the real interop
-    /// wire carries, not a second encoding of it built here. A change to the
-    /// wire builder is therefore a change to what these tests run, and a table
-    /// the constructor would refuse cannot reach the module at all.
+    /// The caps as the module receives them, through production's own path: validated by
+    /// <see cref="FolderPickLimits"/>, then written by <see cref="JsFolderAccess.ToWireCaps"/>.
     /// </summary>
     private static string WireCaps((string Extension, int Cap)[] caps)
     {
-        // The byte cap never reaches the module (JsFolderAccess enforces it on
-        // the C# side); the constructor needs one, and this one constrains nothing.
+        // The byte cap never reaches the module; the constructor needs one, and this one constrains nothing.
         var limits = new FolderPickLimits(
             caps.Select(c => KeyValuePair.Create(c.Extension, c.Cap)), maxFileBytes: long.MaxValue);
         return JsFolderAccess.ToWireCaps(limits).GetRawText();
     }
 
-    /// <summary>
-    /// Call a harness entry point and settle it: the async ones return a
-    /// promise, which is unwrapped (rethrowing its rejection); the rest pass
-    /// straight through.
-    /// </summary>
+    /// <summary>Call a harness entry point and settle it: a promise is unwrapped (rethrowing its rejection).</summary>
     private JsValue Call(string entryPoint, params JsValue[] arguments) =>
-        // The argument array is spelled out rather than left to `params` on
-        // Jint's side: the overload that also takes a `this` value is otherwise
-        // not the one C# picks, and the arguments silently shift by one.
+        // Spelled out rather than left to `params` on Jint's side: the overload that also
+        // takes a `this` value is otherwise not the one C# picks.
         _harness.Get(entryPoint).Call(JsValue.Undefined, arguments).UnwrapIfPromise();
 
     private static DrawResult ReadDraw(JsValue returned) =>

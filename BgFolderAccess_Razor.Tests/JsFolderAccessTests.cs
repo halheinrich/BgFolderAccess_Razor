@@ -7,73 +7,51 @@ using Microsoft.JSInterop;
 namespace BgFolderAccess_Razor.Tests;
 
 /// <summary>
-/// The C# half of the interop seam: <see cref="JsFolderAccess"/>'s mapping of
-/// the JS module's results into <see cref="FolderPickOutcome"/>s, driven
-/// through bUnit's module interop (<c>SetupModule</c>) — no real JS runs. The
-/// JS half (and the real byte path) is browser-only and is exercised by the
-/// consuming host's e2e suite; these tests pin the result-shape contract:
-/// cancelled is a value not an exception, writable maps to capability, the
-/// byte cap fails the pick before bytes move, the per-extension count caps
-/// cross the wire and every kind's found and admitted counts cross back with
-/// the cap figure derived from the enforced table, a resample is that same
-/// draw alone (no picker, no permission request, the caller error when nothing
-/// is held, and no part of a sample when a read fails), the slot file I/O
-/// passes the caller's file name through, and the writability probe's three
-/// answers map one-to-one with anything else refused.
+/// The C# half of the interop seam: <see cref="JsFolderAccess"/>'s mapping of the module's
+/// replies into a <see cref="FolderPickOutcome"/> and its <see cref="IFolderContext"/>, driven
+/// through bUnit's module interop — no real JS runs. The JS half is exercised on the real
+/// module by the Jint suites and, for the real wire, by the consuming host's e2e suite.
+/// These pin the result-shape contract: cancelled is a value not an exception, writable
+/// maps to capability, the byte cap fails the draw before bytes move, the caps cross the
+/// wire and every kind's counts cross back with the cap derived from the enforced table, a
+/// resample is the same draw on the folder's own context, every context operation names
+/// its context and forwards the caller's file name, a landed folder whose draw fails is
+/// released, and a released context refuses every operation before interop.
 ///
 /// <para>
-/// The module's replies are scripted the way they arrive: as the
-/// <see cref="JsonElement"/> the JS runtime hands back, built from the reply
-/// DTO through <see cref="BgFolderAccessJsonContext"/> (see
-/// <see cref="OnTheWire{TDto}"/>). Scripting the DTO itself would script the
-/// very shape halheinrich/backgammon#197 forbids crossing interop, and would
-/// leave the context's deserialization — the half the fix added — unexercised.
+/// The module's replies are scripted the way they arrive: as the <see cref="JsonElement"/>
+/// the JS runtime hands back, built from the reply DTO through
+/// <see cref="BgFolderAccessJsonContext"/> (<see cref="OnTheWire{TDto}"/>). Scripting the
+/// DTO itself would script the very shape halheinrich/backgammon#197 forbids crossing interop.
 /// </para>
 /// </summary>
 public class JsFolderAccessTests : BunitContext
 {
     private const string ModulePath = "./_content/BgFolderAccess_Razor/js/folderAccess.js";
 
-    /// <summary>
-    /// Arbitrary test caps — the library ships no numbers, so the tests supply
-    /// their own small ones.
-    /// </summary>
+    /// <summary>Arbitrary test caps — the library ships no numbers.</summary>
     private static readonly FolderPickLimits Limits = new(
         new Dictionary<string, int> { [".xg"] = 3, [".xgp"] = 5 },
         maxFileBytes: 2L * 1024 * 1024);
 
     /// <summary>
-    /// An <see cref="IJSStreamReference"/> over in-memory bytes that behaves as
-    /// the runtime's <c>JSStreamReference</c> does where the seam depends on
-    /// it, and records what the seam does with it.
-    ///
-    /// <para>
-    /// As in the runtime (dotnet/aspnetcore v10.0.12,
-    /// <c>src/JSInterop/Microsoft.JSInterop/src/Implementation/JSStreamReference.cs</c>,
-    /// lines 36–39), <see cref="OpenReadStreamAsync"/> refuses a
-    /// <see cref="Length"/> past <c>maxAllowedSize</c> with an
-    /// <see cref="ArgumentOutOfRangeException"/> naming that parameter. And as
-    /// there (<c>JSObjectReference.cs</c>, lines 101–108), only
-    /// <see cref="DisposeAsync"/> releases the reference: the stream it opens
-    /// does not, which is why <see cref="DisposeCount"/> is what tells a leak
-    /// from a release.
-    /// </para>
+    /// An <see cref="IJSStreamReference"/> over in-memory bytes that behaves as the runtime's
+    /// <c>JSStreamReference</c> does where the seam depends on it, and records what the seam
+    /// does with it: <see cref="OpenReadStreamAsync"/> refuses a <see cref="Length"/> past
+    /// <c>maxAllowedSize</c> with an <see cref="ArgumentOutOfRangeException"/> naming that
+    /// parameter (dotnet/aspnetcore v10.0.12, JSStreamReference.cs), and only
+    /// <see cref="DisposeAsync"/> releases the reference — the stream it opens does not.
     /// </summary>
     private sealed class FakeJsStreamReference(byte[] bytes) : IJSStreamReference
     {
-        /// <summary>The length the reference reports; the bytes' own by default.</summary>
         public long Length { get; init; } = bytes.Length;
 
-        /// <summary>When set, opening the stream fails with this.</summary>
         public Exception? OpenFailure { get; init; }
 
-        /// <summary>When set, the opened stream hands over this many bytes and then fails.</summary>
         public int? FailAfterBytes { get; init; }
 
-        /// <summary>How many times the reference was disposed.</summary>
         public int DisposeCount { get; private set; }
 
-        /// <summary>The streams this reference opened, in order.</summary>
         public List<TrackedStream> OpenedStreams { get; } = [];
 
         public ValueTask<Stream> OpenReadStreamAsync(
@@ -104,11 +82,10 @@ public class JsFolderAccessTests : BunitContext
     }
 
     /// <summary>
-    /// A read-only stream over <c>bytes</c> that records its own disposal and,
-    /// given <c>failAfterBytes</c>, breaks off with an <see cref="IOException"/>
-    /// once that many bytes are read — a transfer failing part-way. Not a
-    /// <see cref="MemoryStream"/>: that type copies its whole buffer in
-    /// <c>CopyToAsync</c> without reading, so it could not fail part-way.
+    /// A read-only stream that records its own disposal and, given <c>failAfterBytes</c>,
+    /// breaks off with an <see cref="IOException"/> once that many bytes are read. Not a
+    /// <see cref="MemoryStream"/>: that copies its whole buffer in <c>CopyToAsync</c> without
+    /// reading, so it could not fail part-way.
     /// </summary>
     private sealed class TrackedStream(byte[] bytes, int? failAfterBytes) : Stream
     {
@@ -164,28 +141,24 @@ public class JsFolderAccessTests : BunitContext
     private JsFolderAccess CreateSut() => new(JSInterop.JSRuntime, Limits);
 
     /// <summary>
-    /// A scripted reply as it crosses the seam: the module's plain object,
-    /// arriving as the <see cref="JsonElement"/> the JS runtime hands back.
-    /// Built by serializing the DTO through the library's own context, so the
-    /// element carries the wire's camelCase shape and the seam under test reads
-    /// it back the way production does — the round trip is proved by every
-    /// test that then asserts on the mapped outcome.
+    /// A scripted reply as it crosses the seam: the module's plain object, arriving as the
+    /// <see cref="JsonElement"/> the JS runtime hands back, serialized through the library's
+    /// own context so the seam reads it back the way production does.
     /// </summary>
     private static JsonElement OnTheWire<TDto>(TDto reply, JsonTypeInfo<TDto> wireShape) =>
         JsonSerializer.SerializeToElement(reply, wireShape);
 
-    /// <summary>Script <c>beginPick</c>'s reply — the browser-prompt half of the pick.</summary>
-    private static void SetupBeginPick(BunitJSModuleInterop module, string status, string directoryName, bool writable) =>
+    /// <summary>Script <c>beginPick</c>'s reply — the browser-prompt half of the pick, landing the folder in <paramref name="context"/>.</summary>
+    private static void SetupBeginPick(
+        BunitJSModuleInterop module, string status, string directoryName, bool writable, int context = 1) =>
         module.Setup<JsonElement>("beginPick")
             .SetResult(OnTheWire(
-                new JsFolderAccess.JsPickStart(status, directoryName, writable),
+                new JsFolderAccess.JsPickStart(status, directoryName, writable, context),
                 BgFolderAccessJsonContext.Default.JsPickStart));
 
     /// <summary>
-    /// The per-kind report of a draw that took every file it found, as the
-    /// module would send it for <paramref name="files"/> under
-    /// <paramref name="limits"/>: one entry per kind of the table, in its
-    /// order, found and admitted both the number of files of that kind.
+    /// The per-kind report of a draw that took every file it found, as the module would send
+    /// it for <paramref name="files"/> under <paramref name="limits"/>.
     /// </summary>
     private static JsFolderAccess.JsDrawnKind[] WholeDraw(
         FolderPickLimits limits, params JsFolderAccess.JsPickedFile[] files) =>
@@ -197,56 +170,57 @@ public class JsFolderAccessTests : BunitContext
             }),
         ];
 
-    /// <summary>
-    /// Script <c>drawPicked</c>'s reply — the app-work half of every path —
-    /// for a folder within every one of <see cref="Limits"/>' caps.
-    /// </summary>
-    private static void SetupDraw(BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
+    /// <summary>Script <c>draw</c>'s reply for a folder within every one of <see cref="Limits"/>' caps.</summary>
+    private static JSRuntimeInvocationHandler<JsonElement> SetupDraw(
+        BunitJSModuleInterop module, params JsFolderAccess.JsPickedFile[] files) =>
         SetupDraw(module, files, WholeDraw(Limits, files));
 
-    /// <summary>
-    /// Script <c>drawPicked</c>'s reply with the per-kind report given — the
-    /// module's account of what it found and admitted.
-    /// </summary>
-    private static void SetupDraw(
+    /// <summary>Script <c>draw</c>'s reply with the per-kind report given.</summary>
+    private static JSRuntimeInvocationHandler<JsonElement> SetupDraw(
         BunitJSModuleInterop module,
         JsFolderAccess.JsPickedFile[] files,
         JsFolderAccess.JsDrawnKind[] kinds) =>
-        SetupDrawReply(module, new JsFolderAccess.JsDraw("drawn", files, kinds));
+        // Matcher, not the argument-less overload: the call carries the context and the caps
+        // table, and an exact-argument setup would never match it. A later setup for the
+        // same identifier wins over an earlier one, which is how a test scripts a pick's
+        // draw and then a resample's.
+        module.Setup<JsonElement>("draw", _ => true)
+            .SetResult(OnTheWire(new JsFolderAccess.JsDraw(files, kinds), BgFolderAccessJsonContext.Default.JsDraw));
 
-    /// <summary>Script <c>drawPicked</c>'s answer when the module holds no folder.</summary>
-    private static void SetupNoFolder(BunitJSModuleInterop module) =>
-        SetupDrawReply(module, new JsFolderAccess.JsDraw("noFolder", [], []));
-
-    private static void SetupDrawReply(BunitJSModuleInterop module, JsFolderAccess.JsDraw reply) =>
-        // Matcher, not the argument-less overload: the call carries the caps
-        // table, and an exact-argument setup would simply never match it.
-        module.Setup<JsonElement>("drawPicked", _ => true)
-            .SetResult(OnTheWire(reply, BgFolderAccessJsonContext.Default.JsDraw));
-
-    /// <summary>
-    /// Script the fallback mechanism's pick: <c>collectFallbackFiles</c>
-    /// answering the folder's name, then the draw that follows it.
-    /// </summary>
+    /// <summary>Script the fallback mechanism's pick: <c>collectFallbackFiles</c> landing the folder, then its draw.</summary>
     private static void SetupCollectFallback(
         BunitJSModuleInterop module,
         string directoryName,
         JsFolderAccess.JsPickedFile[] files,
-        JsFolderAccess.JsDrawnKind[] kinds)
+        JsFolderAccess.JsDrawnKind[] kinds,
+        int context = 2)
     {
-        module.Setup<string?>("collectFallbackFiles", _ => true).SetResult(directoryName);
+        module.Setup<JsonElement>("collectFallbackFiles", _ => true)
+            .SetResult(OnTheWire(
+                new JsFolderAccess.JsCollected(directoryName, context),
+                BgFolderAccessJsonContext.Default.JsCollected));
         SetupDraw(module, files, kinds);
     }
 
+    /// <summary>Script <c>release</c>, which a disposed context invokes.</summary>
+    private static void SetupRelease(BunitJSModuleInterop module) =>
+        module.SetupVoid("release", _ => true).SetVoidResult();
+
     /// <summary>
-    /// <paramref name="actual"/> is the report <paramref name="expected"/>
-    /// spells, kind for kind and in order — compared by value, since
-    /// <see cref="SampledKind"/> is value-equal.
+    /// A File System Access pick of an empty folder landed in <paramref name="context"/>: the
+    /// folder's context, for the tests of what a context does once held.
     /// </summary>
+    private async Task<IFolderContext> PickedFolderAsync(BunitJSModuleInterop module, int context = 1, bool writable = true)
+    {
+        SetupBeginPick(module, "ok", "Corpus", writable, context);
+        SetupDraw(module, []);
+        var outcome = await CreateSut().PickFolderAsync(NoHook);
+        return outcome.Folder!;
+    }
+
     private static void AssertKinds(ImmutableArray<SampledKind> actual, params SampledKind[] expected) =>
         Assert.Equal(expected, actual);
 
-    /// <summary>A hook that records nothing — for the cases the hook isn't what's under test.</summary>
     private static Func<Task> NoHook => () => Task.CompletedTask;
 
     [Fact]
@@ -268,23 +242,24 @@ public class JsFolderAccessTests : BunitContext
     public async Task PickFolder_CancelledStatus_MapsToCancelledOutcomeNotException()
     {
         var module = JSInterop.SetupModule(ModulePath);
-        SetupBeginPick(module, "cancelled", "", false);
+        SetupBeginPick(module, "cancelled", "", false, context: 0);
         var sut = CreateSut();
 
         var outcome = await sut.PickFolderAsync(NoHook);
 
         Assert.True(outcome.Cancelled);
+        Assert.Null(outcome.Folder);
         Assert.Empty(outcome.Sample.Files);
     }
 
     [Fact]
     public async Task PickFolder_Cancelled_NeverRunsTheAcceptedHook()
     {
-        // No folder, no work — so nothing may raise a busy affordance for work
-        // that will not happen. (No drawPicked setup exists either: a pick that
-        // drew after a cancellation would fail this test loudly.)
+        // No folder, no work — so nothing may raise a busy affordance for work that will not
+        // happen. (No draw setup exists either: a pick that drew after a cancellation would
+        // fail this test loudly.)
         var module = JSInterop.SetupModule(ModulePath);
-        SetupBeginPick(module, "cancelled", "", false);
+        SetupBeginPick(module, "cancelled", "", false, context: 0);
         var sut = CreateSut();
         var hookRan = false;
 
@@ -296,11 +271,8 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_RunsTheAcceptedHook_AfterThePromptsAndBeforeTheScan()
     {
-        // The seam the split exists for: the hook must land after beginPick (the
-        // browser is done asking) and before drawPicked (the app's work that
-        // leaves the user waiting). Pinned by call order, because that
-        // ordering — not the hook's existence — is what makes the busy state
-        // both truthful and paintable.
+        // The seam the split exists for: the hook lands after beginPick (the browser is done
+        // asking) and before the draw (the work that leaves the user waiting).
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupDraw(module, []);
@@ -310,25 +282,22 @@ public class JsFolderAccessTests : BunitContext
         await sut.PickFolderAsync(() =>
         {
             hookRan = true;
-            // Asserted from inside the hook — the only place the "after the
-            // prompts, before the scan" position is observable.
             Assert.Single(module.Invocations["beginPick"]);
-            Assert.Empty(module.Invocations["drawPicked"]);
+            Assert.Empty(module.Invocations["draw"]);
             return Task.CompletedTask;
         });
 
-        Assert.True(hookRan); // an unrun hook would vacuously pass the above
-        Assert.Single(module.Invocations["drawPicked"]);
+        Assert.True(hookRan);
+        Assert.Single(module.Invocations["draw"]);
     }
 
     [Fact]
     public async Task PickFolder_WritableDenied_BuffersBytesAndMapsPermissionDenied()
     {
-        // writable=false from the module (readwrite request not granted) must
-        // surface as PermissionDenied while the files still buffer normally —
-        // the read-only rung, not a failure.
+        // writable=false from the module (readwrite request not granted) surfaces as
+        // PermissionDenied on the folder while the files still buffer normally.
         var module = JSInterop.SetupModule(ModulePath);
-        SetupBeginPick(module, "ok", "Corpus", writable: false);
+        SetupBeginPick(module, "ok", "Corpus", writable: false, context: 5);
         SetupDraw(module, new JsFolderAccess.JsPickedFile("match.xg", 3));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1, 2, 3]));
@@ -337,11 +306,15 @@ public class JsFolderAccessTests : BunitContext
         var outcome = await sut.PickFolderAsync(NoHook);
 
         Assert.False(outcome.Cancelled);
-        Assert.Equal(FolderWriteCapability.PermissionDenied, outcome.Capability);
-        Assert.Equal("Corpus", outcome.DirectoryName);
+        var folder = Assert.IsAssignableFrom<IFolderContext>(outcome.Folder);
+        Assert.Equal(FolderWriteCapability.PermissionDenied, folder.Capability);
+        Assert.Equal("Corpus", folder.Name);
         var file = Assert.Single(outcome.Sample.Files);
         Assert.Equal("match.xg", file.FileName); // extension-bearing name preserved
         Assert.Equal<byte>([1, 2, 3], file.Bytes);
+        // The draw and the byte read name the context the pick landed.
+        Assert.Equal(5, module.VerifyInvoke("draw").Arguments[0]);
+        Assert.Equal([5, "match.xg"], module.VerifyInvoke("readFileData").Arguments);
     }
 
     [Fact]
@@ -356,24 +329,36 @@ public class JsFolderAccessTests : BunitContext
 
         var outcome = await sut.PickFolderAsync(NoHook);
 
-        Assert.Equal(FolderWriteCapability.Enabled, outcome.Capability);
+        Assert.Equal(FolderWriteCapability.Enabled, outcome.Folder!.Capability);
+    }
+
+    [Fact]
+    public async Task CollectFallback_LandsAFolderWithoutWriteCapability_UnderTheCollectedContext()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        SetupCollectFallback(module, "Dropped", [], WholeDraw(Limits), context: 9);
+        var sut = CreateSut();
+
+        var outcome = await sut.CollectFallbackAsync(default);
+
+        Assert.False(outcome.Cancelled);
+        Assert.Equal("Dropped", outcome.Folder!.Name);
+        Assert.Equal(FolderWriteCapability.BrowserUnsupported, outcome.Folder.Capability);
+        Assert.Equal(9, module.VerifyInvoke("draw").Arguments[0]);
     }
 
     /// <summary>
-    /// Caps in an order that is neither ordinal nor length order, for the wire
-    /// pins: a table sorted, or re-keyed through an unordered collection, on
-    /// its way down would reach the module in a different order and fail them.
+    /// Caps in an order that is neither ordinal nor length order, for the wire pins: a
+    /// table sorted on its way down would reach the module in a different order.
     /// </summary>
     private static readonly FolderPickLimits UnsortedLimits = new(
         [new(".xgp", 5), new(".mat", 7), new(".xg", 3)],
         maxFileBytes: 1);
 
     /// <summary>
-    /// The caps argument is the module's plain object — every extension of the
-    /// enforced table, each with its cap, members in the table's order. Pinned
-    /// as exact JSON text: the text's member order is what <c>JSON.parse</c>
-    /// turns into the module's <c>Object.keys</c> order, the order its
-    /// per-kind report reads in.
+    /// The caps argument is the module's plain object — every extension of the enforced
+    /// table with its cap, members in the table's order — pinned as exact JSON text, since
+    /// the text's member order is what the module's per-kind report reads in.
     /// </summary>
     private static void AssertIsTheWireCaps(object? argument)
     {
@@ -384,34 +369,32 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_PassesThePerExtensionCapsToTheModule_InTableOrder()
     {
-        // SSOT, caps edition: the JS module holds no copy of the caps — or of
-        // which extensions are matching files — so both jobs it does with that
-        // table are only correct if the injected instance's table is handed
-        // down on the call, in the table's order. Same pin as the file-name
-        // pairs below.
+        // SSOT, caps edition: the module holds no copy of the caps, so both jobs it does with
+        // the table are only correct if the injected instance's table is handed down on the
+        // call, after the context, in the table's order.
         var module = JSInterop.SetupModule(ModulePath);
-        SetupBeginPick(module, "ok", "Corpus", true);
+        SetupBeginPick(module, "ok", "Corpus", true, context: 3);
         SetupDraw(module, [], WholeDraw(UnsortedLimits));
         var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.PickFolderAsync(NoHook);
 
-        AssertIsTheWireCaps(module.VerifyInvoke("drawPicked").Arguments[0]);
+        var draw = module.VerifyInvoke("draw");
+        Assert.Equal(3, draw.Arguments[0]);
+        AssertIsTheWireCaps(draw.Arguments[1]);
     }
 
     [Fact]
     public async Task CollectFallback_PassesThePerExtensionCapsToTheModule_InTableOrder()
     {
-        // The fallback mechanism is capped identically — same module, same
-        // table. The two mechanisms differing on this would be invisible until a
-        // Firefox user's 3000-file folder behaved unlike a Chrome user's.
+        // The fallback mechanism is capped identically — same module, same table.
         var module = JSInterop.SetupModule(ModulePath);
         SetupCollectFallback(module, "Corpus", [], WholeDraw(UnsortedLimits));
         var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
 
         await sut.CollectFallbackAsync(default);
 
-        AssertIsTheWireCaps(module.VerifyInvoke("drawPicked").Arguments[0]);
+        AssertIsTheWireCaps(module.VerifyInvoke("draw").Arguments[1]);
     }
 
     /// <summary><paramref name="count"/> scripted files of <paramref name="extension"/>, one byte each.</summary>
@@ -421,9 +404,8 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_OverTheCounts_ReportsEveryKindsFoundAndAdmitted_NeverThrows()
     {
-        // The truncate-don't-fail contract: the module returns what it took plus
-        // its per-kind account, and this seam carries every kind up — each
-        // capped independently, so a mixed folder can be past both at once.
+        // The truncate-don't-fail contract: the module returns what it took plus its per-kind
+        // account, and this seam carries every kind up — each capped independently.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Huge", true);
         SetupDraw(
@@ -440,8 +422,7 @@ public class JsFolderAccessTests : BunitContext
         var outcome = await sut.PickFolderAsync(NoHook);
 
         Assert.False(outcome.Cancelled);
-        Assert.Equal(8, outcome.Sample.Files.Length); // what was taken still buffers normally
-        // Each cap is the injected limits' figure: the wire does not carry it.
+        Assert.Equal(8, outcome.Sample.Files.Length);
         AssertKinds(
             outcome.Sample.Kinds,
             new SampledKind(".xg", foundCount: 15, admittedCount: 3, maxFileCount: Limits.MaxFileCountFor(".xg")),
@@ -453,10 +434,8 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_EachKindsCap_IsTheEnforcedTablesEntry_InTheTablesOrder()
     {
-        // The derivation, on a table whose caps all differ and whose order is
-        // neither ordinal nor length order: each kind's figure is the entry
-        // the module was handed for that kind, and a kind the folder holds
-        // none of keeps its place.
+        // Each kind's figure is the entry the module was handed for that kind, and a kind
+        // the folder holds none of keeps its place.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupDraw(
@@ -483,10 +462,9 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_AReportOutOfTheTablesOrder_IsAWireContractViolation_BeforeAnyByteMoves()
     {
-        // The report is the module's account over the table it was handed, so
-        // a kind in the wrong place is the shipped module breaking its
-        // contract — refused, not re-sorted. No readFileData setup exists, so
-        // a transfer attempted before the check would fail differently.
+        // A kind in the wrong place is the shipped module breaking its contract — refused,
+        // not re-sorted. No readFileData setup exists, so a transfer attempted before the
+        // check would fail differently.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupDraw(
@@ -496,6 +474,7 @@ public class JsFolderAccessTests : BunitContext
                 new JsFolderAccess.JsDrawnKind(".xgp", FoundCount: 0, AdmittedCount: 0),
                 new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 1, AdmittedCount: 1),
             ]);
+        SetupRelease(module);
         var sut = CreateSut();
 
         await Assert.ThrowsAsync<JsonException>(() => sut.PickFolderAsync(NoHook));
@@ -504,14 +483,13 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_AReportMissingAKind_IsAWireContractViolation_BeforeAnyByteMoves()
     {
-        // Every kind, or the report cannot say whether the sample is whole: a
-        // missing kind is refused rather than read as "none found".
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupDraw(
             module,
             [new JsFolderAccess.JsPickedFile("a.xg", 1)],
             [new JsFolderAccess.JsDrawnKind(".xg", FoundCount: 1, AdmittedCount: 1)]);
+        SetupRelease(module);
         var sut = CreateSut();
 
         await Assert.ThrowsAsync<JsonException>(() => sut.PickFolderAsync(NoHook));
@@ -520,11 +498,8 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_SampleCollections_RefuseEveryWrite_AndReadTheSame()
     {
-        // The regression this pins (halheinrich/backgammon#273): the pick's
-        // files used to be the List this seam buffered into, handed out behind
-        // IReadOnlyList — a cast added, removed or replaced files under every
-        // other holder of the outcome. Both of the sample's collections are
-        // tried through every interface they implement.
+        // The regression this pins (halheinrich/backgammon#273): the pick's files used to be
+        // the List this seam buffered into, handed out behind IReadOnlyList.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Huge", true);
         SetupDraw(module, new JsFolderAccess.JsPickedFile("kept.xg", 1));
@@ -540,9 +515,6 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task CollectFallback_SampleCollections_RefuseEveryWrite_AndReadTheSame()
     {
-        // The fallback builds its sample through the same two mappings; pinned
-        // separately so a mechanism that grew its own construction path could
-        // not quietly hand out a mutable list again.
         var module = JSInterop.SetupModule(ModulePath);
         var kept = new JsFolderAccess.JsPickedFile("kept.xg", 1);
         SetupCollectFallback(module, "Huge", [kept], WholeDraw(Limits, kept));
@@ -555,11 +527,6 @@ public class JsFolderAccessTests : BunitContext
         AssertSampleCollectionsRefuseEveryWrite(outcome.Sample, keptFile: "kept.xg");
     }
 
-    /// <summary>
-    /// Every write to either of <paramref name="sample"/>'s collections is
-    /// refused, and afterwards the files still hold exactly the one file the
-    /// draw took and the report still reads every kind of <see cref="Limits"/>.
-    /// </summary>
     private static void AssertSampleCollectionsRefuseEveryWrite(FolderSample sample, string keptFile)
     {
         ImmutableExposureAssert.AssertImplementsOnlyCoveredInterfaces<PickedFile>(sample.Files);
@@ -576,10 +543,6 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task PickFolder_WithinTheCounts_ReportsEveryKindWhole()
     {
-        // The other half of the contract: a folder that fit says so, kind by
-        // kind, so a host decides from the report alone that this sample is
-        // the only one the limits could draw. A kind the folder holds none of
-        // is reported too, at zero.
         var module = JSInterop.SetupModule(ModulePath);
         SetupBeginPick(module, "ok", "Corpus", true);
         SetupDraw(module, new JsFolderAccess.JsPickedFile("match.xg", 1));
@@ -599,8 +562,6 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task CollectFallback_OverOneCount_ReportsEveryKind_WithOnlyThatOneShort()
     {
-        // The report rides the fallback's result shape too: the kind cut short
-        // and the kind that was not, side by side.
         var module = JSInterop.SetupModule(ModulePath);
         SetupCollectFallback(
             module, "Huge",
@@ -624,27 +585,28 @@ public class JsFolderAccessTests : BunitContext
     }
 
     [Fact]
-    public async Task PickFolder_OversizedFile_FailsBeforeAnyByteTransfer()
+    public async Task PickFolder_OversizedFile_FailsBeforeAnyByteTransfer_AndReleasesTheFolder()
     {
-        // No readFileData setup exists: a transfer attempted before the
-        // metadata size check would fail this test loudly. The message states
-        // the derived MB figure, so prose and enforced rule cannot drift.
+        // No readFileData setup exists: a transfer attempted before the metadata size check
+        // would fail this test loudly. The landed folder is released with the failure, so the
+        // host holds nothing.
         var module = JSInterop.SetupModule(ModulePath);
-        SetupBeginPick(module, "ok", "Corpus", true);
+        SetupBeginPick(module, "ok", "Corpus", true, context: 4);
         SetupDraw(module,
             new JsFolderAccess.JsPickedFile("huge.xg", Limits.MaxFileBytes + 1));
+        SetupRelease(module);
         var sut = CreateSut();
 
         var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(
             () => sut.PickFolderAsync(NoHook));
+
         AssertOverTheCap(ex, "huge.xg", Limits.MaxFileBytes + 1);
+        Assert.Equal(4, module.VerifyInvoke("release").Arguments[0]);
     }
 
     /// <summary>
-    /// <paramref name="ex"/> reports <paramref name="fileName"/> at
-    /// <paramref name="fileSize"/> bytes against <see cref="Limits"/>' cap, and
-    /// its message states the derived MB figure, so prose and enforced rule
-    /// cannot drift.
+    /// <paramref name="ex"/> reports <paramref name="fileName"/> at <paramref name="fileSize"/>
+    /// bytes against <see cref="Limits"/>' cap, and its message states the derived MB figure.
     /// </summary>
     private static void AssertOverTheCap(PickedFileTooLargeException ex, string fileName, long fileSize)
     {
@@ -656,75 +618,108 @@ public class JsFolderAccessTests : BunitContext
     }
 
     [Fact]
-    public async Task PickedReadAndWrite_PassTheCallerSuppliedNameToJs()
+    public async Task PickFolder_AFailingHook_ReleasesTheLandedFolder_AndThrowsTheHooksFailure()
     {
-        // The slot file I/O is name-parameterized — file-name constants stay
-        // host-side, and this seam forwards whatever the caller supplies to the
-        // picked-slot JS ops verbatim.
+        // The folder is landed before the hook runs; a hook that throws is a host bug, and the
+        // folder must not leak behind it.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<string?>("readPickedFile", inv => true).SetResult(null);
-        module.SetupVoid("writePickedFile", inv => true).SetVoidResult();
+        SetupBeginPick(module, "ok", "Corpus", true, context: 6);
+        SetupRelease(module);
         var sut = CreateSut();
 
-        await sut.ReadPickedFileAsync("setup.json");
-        await sut.WritePickedFileAsync("setup.json", "{}");
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => sut.PickFolderAsync(() => throw new InvalidOperationException("the host's own fault")));
 
-        var read = module.VerifyInvoke("readPickedFile");
-        Assert.Equal("setup.json", read.Arguments[0]);
-        var write = module.VerifyInvoke("writePickedFile");
-        Assert.Equal("setup.json", write.Arguments[0]);
-        Assert.Equal("{}", write.Arguments[1]);
+        Assert.Equal(6, module.VerifyInvoke("release").Arguments[0]);
+        Assert.Empty(module.Invocations["draw"]);
     }
 
     [Fact]
-    public async Task ActiveReadAndWrite_PassTheCallerSuppliedNameToJs()
+    public async Task CollectFallback_ADrawThatFails_ReleasesTheLandedFolder_AndThrowsTheDrawsFailure()
     {
-        // Same pin for the active slot — the pair a running session records
-        // through routes to the active-slot JS ops with the caller's name.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<string?>("readActiveFile", inv => true).SetResult(null);
-        module.SetupVoid("writeActiveFile", inv => true).SetVoidResult();
+        module.Setup<JsonElement>("collectFallbackFiles", _ => true)
+            .SetResult(OnTheWire(new JsFolderAccess.JsCollected("Corpus", 8), BgFolderAccessJsonContext.Default.JsCollected));
+        module.Setup<JsonElement>("draw", _ => true).SetException(new JSException("The folder could not be walked."));
+        SetupRelease(module);
         var sut = CreateSut();
 
-        await sut.ReadActiveFileAsync("record.json");
-        await sut.WriteActiveFileAsync("record.json", "{}");
+        await Assert.ThrowsAsync<JSException>(() => sut.CollectFallbackAsync(default));
 
-        var read = module.VerifyInvoke("readActiveFile");
-        Assert.Equal("record.json", read.Arguments[0]);
-        var write = module.VerifyInvoke("writeActiveFile");
-        Assert.Equal("record.json", write.Arguments[0]);
-        Assert.Equal("{}", write.Arguments[1]);
+        Assert.Equal(8, module.VerifyInvoke("release").Arguments[0]);
     }
 
     [Fact]
-    public async Task ReadsOfAbsentFiles_ReturnNull_OnBothSlots()
+    public async Task PickFolder_AReleaseThatFailsAfterAFailedDraw_StillThrowsTheDrawsFailure()
     {
-        // null = the file doesn't exist yet — an expected absence, not an
-        // error, on either slot.
+        // Releasing never misreports: the failure that ended the pick is the one the caller sees.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<string?>("readPickedFile", inv => true).SetResult(null);
-        module.Setup<string?>("readActiveFile", inv => true).SetResult(null);
+        SetupBeginPick(module, "ok", "Corpus", true);
+        module.Setup<JsonElement>("draw", _ => true).SetException(new JSException("the draw's own failure"));
+        module.SetupVoid("release", _ => true).SetException(new JSException("and the release failed too"));
         var sut = CreateSut();
 
-        Assert.Null(await sut.ReadPickedFileAsync("absent.json"));
-        Assert.Null(await sut.ReadActiveFileAsync("absent.json"));
+        var ex = await Assert.ThrowsAsync<JSException>(() => sut.PickFolderAsync(NoHook));
+
+        Assert.Contains("the draw's own failure", ex.Message);
+    }
+
+    // The context's named-file operations: each names its context and forwards the caller's
+    // file name verbatim — file-name constants stay host-side.
+
+    [Fact]
+    public async Task ReadAndWrite_PassTheContextAndTheCallerSuppliedNameToJs()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module, context: 42);
+        module.Setup<string?>("readFile", _ => true).SetResult(null);
+        module.SetupVoid("writeFile", _ => true).SetVoidResult();
+
+        await folder.ReadFileAsync("setup.json");
+        await folder.WriteFileAsync("setup.json", "{}");
+
+        Assert.Equal([42, "setup.json"], module.VerifyInvoke("readFile").Arguments);
+        Assert.Equal([42, "setup.json", "{}"], module.VerifyInvoke("writeFile").Arguments);
+    }
+
+    [Fact]
+    public async Task ReadOfAnAbsentFile_ReturnsNull()
+    {
+        // null = the file doesn't exist yet — an expected absence, not an error.
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
+        module.Setup<string?>("readFile", _ => true).SetResult(null);
+
+        Assert.Null(await folder.ReadFileAsync("absent.json"));
+    }
+
+    [Fact]
+    public async Task ReadAndWrite_NullArguments_ThrowBeforeInterop()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(() => folder.ReadFileAsync(null!));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => folder.WriteFileAsync(null!, "{}"));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => folder.WriteFileAsync("setup.json", null!));
+        Assert.Empty(module.Invocations["readFile"]);
+        Assert.Empty(module.Invocations["writeFile"]);
     }
 
     [Theory]
-    [InlineData("absent", PickedFileWritability.Absent)]
-    [InlineData("writable", PickedFileWritability.Writable)]
-    [InlineData("notWritable", PickedFileWritability.NotWritable)]
-    public async Task ProbePickedFile_MapsEachModuleAnswer(string wire, PickedFileWritability expected)
+    [InlineData("absent", FileWritability.Absent)]
+    [InlineData("writable", FileWritability.Writable)]
+    [InlineData("notWritable", FileWritability.NotWritable)]
+    public async Task ProbeFile_MapsEachModuleAnswer(string wire, FileWritability expected)
     {
-        // The module turns the browser's answer into one of three strings;
-        // this seam is the one place they become the enum. The caller's name
-        // is forwarded verbatim, as for the sibling picked-slot reads.
+        // The module turns the browser's answer into one of three strings; this seam is the
+        // one place they become the enum.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<string?>("probePickedFileWritability", _ => true).SetResult(wire);
-        var sut = CreateSut();
+        var folder = await PickedFolderAsync(module, context: 3);
+        module.Setup<string?>("probeFileWritability", _ => true).SetResult(wire);
 
-        Assert.Equal(expected, await sut.ProbePickedFileWritabilityAsync("stats.json"));
-        Assert.Equal("stats.json", module.VerifyInvoke("probePickedFileWritability").Arguments[0]);
+        Assert.Equal(expected, await folder.ProbeFileWritabilityAsync("stats.json"));
+        Assert.Equal([3, "stats.json"], module.VerifyInvoke("probeFileWritability").Arguments);
     }
 
     [Theory]
@@ -732,38 +727,80 @@ public class JsFolderAccessTests : BunitContext
     [InlineData("readOnly")]
     [InlineData("")]
     [InlineData(null)]
-    public async Task ProbePickedFile_AnAnswerTheModuleDoesNotShip_Throws(string? wire)
+    public async Task ProbeFile_AnAnswerTheModuleDoesNotShip_Throws(string? wire)
     {
-        // An unknown answer is a wire-contract violation, not a fourth outcome
-        // to guess at — including a case-variant of a real one, since the
-        // module's spelling is a fact, not a tolerance.
+        // An unknown answer is a wire-contract violation, not a fourth outcome to guess at —
+        // a case-variant of a real one included, since the module's spelling is a fact.
         var module = JSInterop.SetupModule(ModulePath);
-        module.Setup<string?>("probePickedFileWritability", _ => true).SetResult(wire);
-        var sut = CreateSut();
+        var folder = await PickedFolderAsync(module);
+        module.Setup<string?>("probeFileWritability", _ => true).SetResult(wire);
 
-        await Assert.ThrowsAsync<JsonException>(() => sut.ProbePickedFileWritabilityAsync("stats.json"));
+        await Assert.ThrowsAsync<JsonException>(() => folder.ProbeFileWritabilityAsync("stats.json"));
     }
 
     [Fact]
-    public async Task ProbePickedFile_NullName_ThrowsBeforeInterop()
+    public async Task ProbeFile_NullName_ThrowsBeforeInterop()
     {
-        // Not even the module import runs — the root interop saw no call.
-        JSInterop.SetupModule(ModulePath);
-        var sut = CreateSut();
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
 
-        await Assert.ThrowsAsync<ArgumentNullException>(() => sut.ProbePickedFileWritabilityAsync(null!));
-        Assert.Empty(JSInterop.Invocations);
+        await Assert.ThrowsAsync<ArgumentNullException>(() => folder.ProbeFileWritabilityAsync(null!));
+        Assert.Empty(module.Invocations["probeFileWritability"]);
     }
 
-    // Resample: the draw both pick paths end in, alone. The module's side —
-    // what it walks, and that a draw and its reads change none of its state —
-    // is pinned on the real module in FolderAccessResampleTests; these pin the
-    // C# mapping over scripted replies.
+    // Release: a context frees its handle once, and refuses everything afterwards.
+
+    [Fact]
+    public async Task Dispose_ReleasesTheContext_Once()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module, context: 11);
+        SetupRelease(module);
+
+        await folder.DisposeAsync();
+        await folder.DisposeAsync();
+
+        Assert.Equal(11, module.VerifyInvoke("release").Arguments[0]);
+    }
+
+    [Fact]
+    public async Task Dispose_ToleratesARuntimeAlreadyTornDown()
+    {
+        // A tab close or reload tears the runtime down before the context releases: nothing
+        // is left to free, and the disposal must not throw.
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
+        module.SetupVoid("release", _ => true).SetException(new JSDisconnectedException("gone"));
+
+        await folder.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task AReleasedContext_RefusesEveryOperation_BeforeInterop()
+    {
+        var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
+        SetupRelease(module);
+        await folder.DisposeAsync();
+        var before = module.Invocations.Count;
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => folder.ResampleAsync());
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => folder.ReadFileAsync("a.json"));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => folder.WriteFileAsync("a.json", "{}"));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => folder.ProbeFileWritabilityAsync("a.json"));
+
+        Assert.Equal(before, module.Invocations.Count);
+    }
+
+    // Resample: the draw a pick ends in, on the folder's own context. The module's side —
+    // what it walks, and that a draw and its reads change none of its state — is pinned on
+    // the real module in FolderAccessResampleTests; these pin the C# mapping.
 
     [Fact]
     public async Task Resample_ReportsEveryKind_WithTheCapFromTheEnforcedTable()
     {
         var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
         SetupDraw(
             module,
             [.. FilesOf(".xg", 3), .. FilesOf(".xgp", 2)],
@@ -773,9 +810,8 @@ public class JsFolderAccessTests : BunitContext
             ]);
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
-        var sut = CreateSut();
 
-        var sample = await sut.ResampleAsync();
+        var sample = await folder.ResampleAsync();
 
         Assert.Equal(5, sample.Files.Length);
         AssertKinds(
@@ -786,170 +822,122 @@ public class JsFolderAccessTests : BunitContext
     }
 
     [Fact]
-    public async Task Resample_PassesThePerExtensionCapsToTheModule_InTableOrder()
+    public async Task Resample_NamesItsContext_AndPassesThePerExtensionCapsToTheModule_InTableOrder()
     {
-        // The module keeps no copy of the table between a pick and a resample:
-        // the resample hands it down again, whole and in order.
+        // The module keeps no copy of the table between a pick and a resample: the resample
+        // hands it down again, whole and in order, for the folder it is a resample of.
         var module = JSInterop.SetupModule(ModulePath);
+        SetupBeginPick(module, "ok", "Corpus", true, context: 12);
         SetupDraw(module, [], WholeDraw(UnsortedLimits));
         var sut = new JsFolderAccess(JSInterop.JSRuntime, UnsortedLimits);
+        var folder = (await sut.PickFolderAsync(NoHook)).Folder!;
 
-        await sut.ResampleAsync();
+        await folder.ResampleAsync();
 
-        AssertIsTheWireCaps(module.VerifyInvoke("drawPicked").Arguments[0]);
+        var draws = module.Invocations["draw"];
+        Assert.Equal(2, draws.Count);
+        Assert.Equal(12, draws[1].Arguments[0]);
+        AssertIsTheWireCaps(draws[1].Arguments[1]);
     }
 
     [Fact]
     public async Task Resample_CallsOnlyTheDrawAndTheByteReads()
     {
-        // No picker, no permission request, no fallback collection: nothing a
-        // resample does can show the user a prompt. (The interop is strict, so
-        // an unscripted call would fail the test anyway; this states the set.)
+        // No picker, no permission request, no fallback collection: nothing a resample does
+        // can show the user a prompt.
         var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
+        var before = module.Invocations.Count;
         SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xg", 1));
         module.Setup<IJSStreamReference>("readFileData", inv => true)
             .SetResult(new FakeJsStreamReference([1]));
-        var sut = CreateSut();
 
-        await sut.ResampleAsync();
+        await folder.ResampleAsync();
 
-        Assert.Equal(["drawPicked", "readFileData"], module.Invocations.Select(i => i.Identifier).Distinct().Order());
+        Assert.Equal(["draw", "readFileData"], module.Invocations.Skip(before).Select(i => i.Identifier).Distinct().Order());
     }
 
     [Fact]
     public async Task Resample_OversizedFile_FailsBeforeAnyByteTransfer()
     {
-        // The pick's byte cap, by the pick's own code path: no readFileData
-        // setup exists, so a transfer attempted before the check would fail
-        // differently.
         var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
         SetupDraw(
             module,
             new JsFolderAccess.JsPickedFile("small.xg", 1),
             new JsFolderAccess.JsPickedFile("huge.xg", Limits.MaxFileBytes + 1));
-        var sut = CreateSut();
 
-        var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(() => sut.ResampleAsync());
+        var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(() => folder.ResampleAsync());
         AssertOverTheCap(ex, "huge.xg", Limits.MaxFileBytes + 1);
-    }
-
-    [Fact]
-    public async Task Resample_WithNoFolderHeld_IsACallerError()
-    {
-        // Nothing picked, or the pick cleared: the module answers "noFolder",
-        // and the seam turns it into the documented InvalidOperationException
-        // rather than an empty sample a caller might install.
-        var module = JSInterop.SetupModule(ModulePath);
-        SetupNoFolder(module);
-        var sut = CreateSut();
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => sut.ResampleAsync());
-        Assert.Contains("No folder is held", ex.Message);
         Assert.Empty(module.Invocations["readFileData"]);
-    }
-
-    [Fact]
-    public async Task PickFolder_FolderReleasedWhileTheHookRan_IsTheSameCallerError()
-    {
-        // The hook yields to the renderer, so a Clear can land inside it; the
-        // draw then finds nothing held, as documented on PickFolderAsync.
-        var module = JSInterop.SetupModule(ModulePath);
-        SetupBeginPick(module, "ok", "Corpus", true);
-        SetupNoFolder(module);
-        var sut = CreateSut();
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => sut.PickFolderAsync(NoHook));
-    }
-
-    [Fact]
-    public async Task Resample_AStatusTheModuleDoesNotShip_IsAWireContractViolation()
-    {
-        var module = JSInterop.SetupModule(ModulePath);
-        SetupDrawReply(module, new JsFolderAccess.JsDraw("Drawn", [], WholeDraw(Limits)));
-        var sut = CreateSut();
-
-        await Assert.ThrowsAsync<JsonException>(() => sut.ResampleAsync());
     }
 
     [Fact]
     public async Task Resample_AReadFailingPartWayThroughBuffering_ReturnsNoPart_AndALaterResampleSucceeds()
     {
-        // One file buffered, then the next file's read fails: the caller gets
-        // the exception and nothing else — no sample holding the first file —
-        // and the seam keeps nothing that stops the next resample. (That the
-        // module's own state survives is pinned on the real module, in
-        // FolderAccessResampleTests; here the replies are scripted.)
+        // One file buffered, then the next file's read fails: the caller gets the exception
+        // and nothing else, and the context keeps nothing that stops the next resample or the
+        // folder's documents.
         var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
         SetupDraw(
             module,
             new JsFolderAccess.JsPickedFile("a.xg", 1),
             new JsFolderAccess.JsPickedFile("b.xg", 1));
-        module.Setup<IJSStreamReference>("readFileData", inv => Equals(inv.Arguments[0], "a.xg"))
+        module.Setup<IJSStreamReference>("readFileData", inv => Equals(inv.Arguments[1], "a.xg"))
             .SetResult(new FakeJsStreamReference([1]));
-        var bRead = module.Setup<IJSStreamReference>("readFileData", inv => Equals(inv.Arguments[0], "b.xg"));
+        var bRead = module.Setup<IJSStreamReference>("readFileData", inv => Equals(inv.Arguments[1], "b.xg"));
         bRead.SetException(new JSException("'b.xg' could not be read."));
-        module.Setup<string?>("readPickedFile", _ => true).SetResult("{}");
-        module.Setup<string?>("probePickedFileWritability", _ => true).SetResult("writable");
-        var sut = CreateSut();
+        module.Setup<string?>("readFile", _ => true).SetResult("{}");
+        module.Setup<string?>("probeFileWritability", _ => true).SetResult("writable");
 
         FolderSample? partial = null;
-        await Assert.ThrowsAsync<JSException>(async () => partial = await sut.ResampleAsync());
+        await Assert.ThrowsAsync<JSException>(async () => partial = await folder.ResampleAsync());
 
         Assert.Null(partial);
-        Assert.Equal(["a.xg", "b.xg"], module.Invocations["readFileData"].Select(i => i.Arguments[0]));
+        Assert.Equal(["a.xg", "b.xg"], module.Invocations["readFileData"].Select(i => i.Arguments[1]));
 
         bRead.SetResult(new FakeJsStreamReference([2]));
-        var sample = await sut.ResampleAsync();
+        var sample = await folder.ResampleAsync();
 
         Assert.Equal(["a.xg", "b.xg"], sample.Files.Select(file => file.FileName));
         Assert.Equal<byte>([2], sample.Files[1].Bytes);
-        Assert.Equal("{}", await sut.ReadPickedFileAsync("setup.json"));
-        Assert.Equal(PickedFileWritability.Writable, await sut.ProbePickedFileWritabilityAsync("setup.json"));
+        Assert.Equal("{}", await folder.ReadFileAsync("setup.json"));
+        Assert.Equal(FileWritability.Writable, await folder.ProbeFileWritabilityAsync("setup.json"));
     }
 
-    // Every buffered file's IJSStreamReference is released. The runtime keeps
-    // each returned buffer in its JS object table until the reference is
-    // disposed (Microsoft.JSInterop.ts, createJSStreamReference and
-    // disposeJSObjectReferenceById, dotnet/aspnetcore v10.0.12), and the stream
-    // opened from it does not dispose it — so an undisposed reference keeps a
-    // whole file's bytes alive in the browser for the life of the tab, and a
-    // resample adds a whole sample's worth each time.
+    // Every buffered file's IJSStreamReference is released. The runtime keeps each returned
+    // buffer in its JS object table until the reference is disposed (dotnet/aspnetcore
+    // v10.0.12), and the stream opened from it does not dispose it.
 
     /// <summary>
-    /// Buffer one file, <c>a.xg</c> (3 bytes by its metadata), read through
-    /// <paramref name="read"/>, by <paramref name="operation"/> — <c>"pick"</c>,
-    /// <c>"fallback"</c> or <c>"resample"</c>: the three operations that reach
-    /// the one buffering path.
+    /// Buffer one file, <c>a.xg</c> (3 bytes by its metadata), read through <paramref name="read"/>,
+    /// by <paramref name="operation"/> — <c>"pick"</c>, <c>"fallback"</c> or <c>"resample"</c>:
+    /// the three operations that reach the one buffering path.
     /// </summary>
     private async Task<FolderSample> BufferOneFileAsync(string operation, FakeJsStreamReference read)
     {
         var module = JSInterop.SetupModule(ModulePath);
         var file = new JsFolderAccess.JsPickedFile("a.xg", 3);
+        module.Setup<IJSStreamReference>("readFileData", _ => true).SetResult(read);
+        SetupRelease(module);
+        var sut = CreateSut();
         switch (operation)
         {
             case "pick":
                 SetupBeginPick(module, "ok", "Corpus", true);
                 SetupDraw(module, file);
-                break;
+                return (await sut.PickFolderAsync(NoHook)).Sample;
             case "fallback":
                 SetupCollectFallback(module, "Corpus", [file], WholeDraw(Limits, file));
-                break;
+                return (await sut.CollectFallbackAsync(default)).Sample;
             case "resample":
+                var folder = await PickedFolderAsync(module);
                 SetupDraw(module, file);
-                break;
+                return await folder.ResampleAsync();
             default:
                 throw new ArgumentOutOfRangeException(nameof(operation), operation, "Not an operation that buffers.");
         }
-
-        module.Setup<IJSStreamReference>("readFileData", _ => true).SetResult(read);
-        var sut = CreateSut();
-
-        return operation switch
-        {
-            "pick" => (await sut.PickFolderAsync(NoHook)).Sample,
-            "fallback" => (await sut.CollectFallbackAsync(default)).Sample,
-            _ => await sut.ResampleAsync(),
-        };
     }
 
     [Theory]
@@ -958,9 +946,6 @@ public class JsFolderAccessTests : BunitContext
     [InlineData("resample")]
     public async Task BufferedFile_StreamReferenceIsReleased_OnceItsBytesAreCopied(string operation)
     {
-        // The one buffering path, through each of the three operations that
-        // reach it: the reference is disposed exactly once, after the copy,
-        // and the stream it opened is disposed too.
         var read = new FakeJsStreamReference([1, 2, 3]);
 
         var sample = await BufferOneFileAsync(operation, read);
@@ -984,9 +969,6 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task BufferedFile_StreamReferenceIsReleased_WhenCopyingFailsPartWay()
     {
-        // Two of the three bytes cross, then the transfer breaks off: the
-        // failure surfaces unchanged, and both the stream and the reference
-        // behind it are released.
         var read = new FakeJsStreamReference([1, 2, 3]) { FailAfterBytes = 2 };
 
         await Assert.ThrowsAsync<IOException>(() => BufferOneFileAsync("resample", read));
@@ -1003,11 +985,9 @@ public class JsFolderAccessTests : BunitContext
     [InlineData("resample")]
     public async Task AFileThatGrewPastTheCapAfterTheDraw_ThrowsTheCapsException_AndReleasesItsReference(string operation)
     {
-        // Within the cap by its metadata, over it by the length its bytes are
-        // handed over at: the same exception as the metadata check, with the
-        // size the second check saw. The stream is never opened, so the
-        // runtime's own ArgumentOutOfRangeException for that length (which
-        // the fake reproduces) never arises — and the reference is released.
+        // Within the cap by its metadata, over it by the length its bytes are handed over at:
+        // the same exception as the metadata check, with the size the second check saw. The
+        // stream is never opened, so the runtime's own ArgumentOutOfRangeException never arises.
         var read = new FakeJsStreamReference([1, 2, 3]) { Length = Limits.MaxFileBytes + 1 };
 
         var ex = await Assert.ThrowsAsync<PickedFileTooLargeException>(() => BufferOneFileAsync(operation, read));
@@ -1020,7 +1000,6 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task AFileExactlyAtTheCap_IsBuffered()
     {
-        // The cap is inclusive at both checks: a length equal to it passes.
         var read = new FakeJsStreamReference([1, 2, 3]) { Length = Limits.MaxFileBytes };
 
         var sample = await BufferOneFileAsync("resample", read);
@@ -1032,9 +1011,8 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task AnArgumentOutOfRangeFromOpeningTheStream_IsNotTranslated()
     {
-        // Within the cap, the stream fails to open for some other reason that
-        // happens to be an ArgumentOutOfRangeException: it is not the byte cap
-        // and is not reported as one. The reference is still released.
+        // Within the cap, the stream fails to open for some other reason that happens to be an
+        // ArgumentOutOfRangeException: it is not the byte cap and is not reported as one.
         var read = new FakeJsStreamReference([1, 2, 3])
         {
             OpenFailure = new ArgumentOutOfRangeException("offset", "Something else entirely."),
@@ -1049,19 +1027,16 @@ public class JsFolderAccessTests : BunitContext
     [Fact]
     public async Task AnArgumentOutOfRangeFromReadingTheReference_IsNotTranslated()
     {
-        // The runtime's reference converter builds a JSStreamReference, whose
-        // constructor refuses a length that is not positive with an
-        // ArgumentOutOfRangeException (dotnet/aspnetcore v10.0.12,
-        // JSStreamReference.cs, lines 22-27) — so readFileData itself can fail
-        // that way, before this side holds any reference. That surfaces
-        // unchanged: it is not a file over the cap.
+        // The runtime's reference converter refuses a length that is not positive with an
+        // ArgumentOutOfRangeException (dotnet/aspnetcore v10.0.12, JSStreamReference.cs), so
+        // readFileData itself can fail that way, before this side holds any reference.
         var module = JSInterop.SetupModule(ModulePath);
+        var folder = await PickedFolderAsync(module);
         SetupDraw(module, new JsFolderAccess.JsPickedFile("a.xg", 3));
         module.Setup<IJSStreamReference>("readFileData", _ => true)
             .SetException(new ArgumentOutOfRangeException("totalLength", 0L, "Length must be a positive value."));
-        var sut = CreateSut();
 
-        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => sut.ResampleAsync());
+        var ex = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => folder.ResampleAsync());
 
         Assert.Equal("totalLength", ex.ParamName);
     }

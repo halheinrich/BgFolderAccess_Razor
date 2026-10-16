@@ -3,7 +3,7 @@ namespace BgFolderAccess_Razor;
 /// <summary>
 /// Whether the host can write files into the folder the user picked,
 /// determined once at pick time and carried on
-/// <see cref="FolderPickOutcome.Capability"/>. Only <see cref="Enabled"/>
+/// <see cref="IFolderContext.Capability"/>. Only <see cref="Enabled"/>
 /// permits writing; the other two are the read-only degrade reasons a host's
 /// pick-time status notice distinguishes.
 /// </summary>

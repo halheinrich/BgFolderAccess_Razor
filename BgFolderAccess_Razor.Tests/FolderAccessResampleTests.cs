@@ -6,10 +6,11 @@ using static BgFolderAccess_Razor.Tests.FolderAccessModuleHost;
 
 /// <summary>
 /// Resample as <c>folderAccess.js</c> actually runs it, through
-/// <see cref="FolderAccessModuleHost"/>: a second draw of the held folder, by
-/// the same <c>drawPicked</c> a pick ends in, with no picker and no permission
+/// <see cref="FolderAccessModuleHost"/>: a second draw of a landed folder, by
+/// the same <c>draw</c> a pick ends in, with no picker and no permission
 /// request — and what the module still holds afterwards, whether the resample
-/// succeeded or failed part-way.
+/// succeeded or failed part-way; and the context table itself: two picks are
+/// two folders, each drawn and released on its own.
 ///
 /// <para>
 /// The draw's own invariants (subset, per-kind independence, encounter order,
@@ -61,7 +62,6 @@ public class FolderAccessResampleTests
         // The under-limit kind is whole and in folder order on the resample as
         // on the pick, the over-limit kind is drawn down to its cap, and the
         // admitted files are a subsequence of the folder across kinds.
-        Assert.Equal("drawn", result.Status);
         Assert.Equal(["b.xgp", "d.xgp"], [.. result.Files.Where(name => name.EndsWith(".xgp"))]);
         Assert.Equal(2, result.Files.Count(name => name.EndsWith(".xg")));
         Assert.Equal([.. folder.Where(result.Files.Contains)], result.Files);
@@ -182,12 +182,11 @@ public class FolderAccessResampleTests
     }
 
     [Fact]
-    public void FileSystemAccess_AReadFailingAfterTheDraw_LeavesTheFolderItsDocumentsAndTheActiveSlot()
+    public void FileSystemAccess_AReadFailingAfterTheDraw_LeavesTheFolderAndItsDocuments()
     {
         var host = new FolderAccessModuleHost();
         host.Pick(Mechanism.FileSystemAccess, ["a.xg", "b.xg", "c.xg"], (".xg", 5));
-        host.WritePickedFile("setup.json", "{\"kept\":true}");
-        Assert.True(host.PromoteToActive());
+        host.WriteFile("setup.json", "{\"kept\":true}");
 
         // a.xg buffers, then b.xg's bytes fail to read: the whole resample
         // fails — the harness loop stops where JsFolderAccess's would, and
@@ -195,12 +194,11 @@ public class FolderAccessResampleTests
         host.FailReadOf("b.xg");
         Assert.ThrowsAny<JintException>(() => host.ResampleAndBuffer((".xg", 5)));
 
-        // Everything a later operation reads is as it was: the picked slot's
-        // document and probe, the active slot, and the held folder itself,
-        // which the next resample draws whole.
-        Assert.Equal("{\"kept\":true}", host.ReadPickedFile("setup.json"));
-        Assert.Equal("writable", host.ProbePickedFile("setup.json"));
-        Assert.Equal("{\"kept\":true}", host.ReadActiveFile("setup.json"));
+        // Everything a later operation reads is as it was: the folder's
+        // document and probe, and the folder itself, which the next resample
+        // draws whole.
+        Assert.Equal("{\"kept\":true}", host.ReadFile("setup.json"));
+        Assert.Equal("writable", host.ProbeFile("setup.json"));
         host.FailReadOf(null);
         Assert.Equal(["a.xg:4", "b.xg:4", "c.xg:4"], host.ResampleAndBuffer((".xg", 5)));
     }
@@ -219,39 +217,49 @@ public class FolderAccessResampleTests
         Assert.ThrowsAny<JintException>(() => host.ResampleAndBuffer(caps));
 
         // Every candidate is still there to draw and to read, and the
-        // fallback's picked slot still offers no handle, as before.
+        // fallback's folder still offers no handle for named files, as before.
         host.FailReadOf(null);
         Assert.Equal<DrawnKind>([new(".xg", 2, 2), new(".xgp", 3, 1)], host.Resample(caps).Kinds);
         var buffered = host.ResampleAndBuffer(caps);
         Assert.Equal(["a.xg:4", "b.xg:4"], buffered.Take(2));
         Assert.Equal(3, buffered.Count);
-        Assert.False(host.PromoteToActive());
+        Assert.ThrowsAny<JintException>(() => host.ReadFile("setup.json"));
     }
 
     [Theory]
     [MemberData(nameof(Mechanisms))]
-    public void Clear_ReleasesTheHeldFolder_AndTheRetainedCandidates(Mechanism mechanism)
+    public void Release_FreesTheFolder_AndTheRetainedCandidates(Mechanism mechanism)
     {
         var host = new FolderAccessModuleHost();
         host.Pick(mechanism, ["a.xg", "b.xg"], (".xg", 5));
         Assert.Equal(4, host.ReadFileData("a.xg")); // readable while held
 
-        host.Clear();
+        host.Release();
 
-        // Nothing is left to draw from, or to read a drawn name against.
-        var result = host.Resample((".xg", 5));
-        Assert.Equal("noFolder", result.Status);
-        Assert.Empty(result.Files);
-        Assert.Empty(result.Kinds);
+        // Nothing is left to draw from, or to read a drawn name against: a
+        // released context is a caller error on every operation.
+        Assert.ThrowsAny<JintException>(() => host.Resample((".xg", 5)));
         Assert.ThrowsAny<JintException>(() => host.ReadFileData("a.xg"));
+        Assert.ThrowsAny<JintException>(() => host.ReadFile("setup.json"));
     }
 
     [Fact]
-    public void Resample_WithNothingEverPicked_AnswersNoFolder()
+    public void ADrawOfAContextNeverLanded_Throws()
     {
-        var result = new FolderAccessModuleHost().Resample((".xg", 5));
+        var host = new FolderAccessModuleHost();
 
-        Assert.Equal("noFolder", result.Status);
+        Assert.ThrowsAny<JintException>(() => host.ResampleOf(99, (".xg", 5)));
+    }
+
+    [Theory]
+    [MemberData(nameof(Mechanisms))]
+    public void ReleasingAContextTwice_IsHarmless(Mechanism mechanism)
+    {
+        var host = new FolderAccessModuleHost();
+        host.Pick(mechanism, ["a.xg"], (".xg", 5));
+
+        host.Release();
+        host.Release();
     }
 
     [Fact]
@@ -266,18 +274,31 @@ public class FolderAccessResampleTests
     }
 
     [Fact]
-    public void AFallbackCollection_ReplacesTheHeldFolder()
+    public void TwoPicks_AreTwoFolders_EachHeldDrawnAndReleasedOnItsOwn()
     {
-        // A File System Access folder held, then a fallback collection: the
-        // collection's folder is held now, and the handle is gone with the old
-        // one (no named-file I/O on the fallback).
+        // A File System Access folder landed, then a fallback collection: both
+        // are held, each draws on its own, the first still serves its
+        // documents, and releasing it leaves the second untouched. (The fake
+        // disk is one folder that a pick refills, so the handle's fresh walk
+        // sees the second pick's files and the document is written after it;
+        // the fallback's candidates were retained at collection.)
         var host = new FolderAccessModuleHost();
         host.Pick(Mechanism.FileSystemAccess, ["a.xg"], (".xg", 5));
+        var first = host.Context;
 
         host.Pick(Mechanism.Fallback, ["z.xg"], (".xg", 5));
+        var second = host.Context;
 
+        Assert.NotEqual(first, second);
         Assert.Equal(["z.xg"], host.Resample((".xg", 5)).Files);
-        Assert.False(host.PromoteToActive());
-        Assert.ThrowsAny<JintException>(() => host.ReadPickedFile("setup.json"));
+        Assert.Equal(["z.xg"], host.ResampleOf(first, (".xg", 5)).Files);
+        host.WriteFileOf(first, "setup.json", "{\"kept\":true}");
+        Assert.Equal("{\"kept\":true}", host.ReadFileOf(first, "setup.json"));
+        Assert.ThrowsAny<JintException>(() => host.ReadFile("setup.json")); // the fallback has no handle
+
+        host.ReleaseOf(first);
+
+        Assert.ThrowsAny<JintException>(() => host.ResampleOf(first, (".xg", 5)));
+        Assert.Equal(["z.xg"], host.Resample((".xg", 5)).Files);
     }
 }

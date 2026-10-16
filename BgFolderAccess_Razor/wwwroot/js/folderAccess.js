@@ -1,102 +1,69 @@
-// folderAccess.js — BgFolderAccess_Razor's folder-picking + slot-file module,
-// shipped as a static web asset (consumers import
-// ./_content/BgFolderAccess_Razor/js/folderAccess.js). Loaded as an ES module
-// by JsFolderAccess; nothing else imports it.
-//
-// Two-slot state model:
-//   picked slot — the HELD folder, bound by a pick gesture: the
-//     FileSystemDirectoryHandle of a File System Access pick, or the
-//     candidates a fallback collection retained (every top-level File the
-//     browser handed over, by name). Every draw — a pick's or a resample's —
-//     and every byte read reads it; only beginPick, collectFallbackFiles and
-//     clearPicked write it.
-//   active slot — the directory handle promoted for a *running session's*
-//     writes. Bound only by promoteToActive(), so a mid-session Clear or
-//     re-pick (which only touches the picked slot) never affects work
-//     recording through the active slot.
-//
-// Handles never cross the interop boundary — C# sees names, sizes, bytes, and
-// booleans. Expected outcomes are result values (cancelled pick, missing named
-// file, denied permission, a named file the browser won't write, no folder held
-// to draw from); only unexpected browser failures throw, surfacing as
+// folderAccess.js — BgFolderAccess_Razor's folder module, shipped as a static
+// web asset and imported by JsFolderAccess alone. A pick lands a folder in the
+// context table below and answers its id; every later call names that id, and
+// release(id) frees it. The browser's directory handles never cross interop:
+// C# sees ids, names, sizes, bytes, text and a few status strings. Expected
+// outcomes are values (a cancelled pick, a missing file, a file the browser
+// won't write); only unexpected browser failures throw, and those surface as
 // JSException on the C# side.
 
-// The picked slot. A folder is HELD while either of the first two is non-null,
-// and never both: beginPick sets the handle and drops the candidates,
-// collectFallbackFiles sets the candidates and drops the handle, clearPicked
-// drops both. Each of the three assigns the pair in adjacent synchronous
-// statements, so no other code ever sees a half-replaced slot.
-//
-// NOTHING ELSE IS KEPT BETWEEN CALLS. A draw does not record what it drew:
-// readFileData resolves each name against the held folder when it is asked.
-// So a draw, and the byte reads that follow it, change no module state at all,
-// and a resample that fails part-way leaves nothing behind to repair.
-let pickedHandle = null;      // FileSystemDirectoryHandle | null (fallback picks have none)
-let pickedCandidates = null;  // Map name -> File | null — a fallback pick's top-level files, in encounter order
-let activeHandle = null;      // FileSystemDirectoryHandle | null — the running session's write folder
+// One entry per landed folder, until release(id): the FileSystemDirectoryHandle
+// of a File System Access pick, or the candidates a fallback collection
+// retained — every top-level File the browser handed over, by name, as
+// references and never bytes, because that mechanism hands the tree over once
+// and cannot walk it again. Nothing else is kept between calls: a draw records
+// nothing, and readFileData resolves each name against the folder again, so a
+// draw or a buffering pass that fails leaves nothing behind to repair.
+const contexts = new Map();
+let nextContext = 1;
+
+function land(handle, candidates) {
+    const id = nextContext++;
+    contexts.set(id, { handle, candidates });
+    return id;
+}
+
+function contextOf(id) {
+    const context = contexts.get(id);
+    if (context === undefined) {
+        throw new Error(`No folder is held under context ${id}.`);
+    }
+    return context;
+}
+
+// The named-file operations need a handle; a fallback folder has none.
+function handleOf(id) {
+    const { handle } = contextOf(id);
+    if (handle === null) {
+        throw new Error('This folder has no File System Access handle to read or write files with.');
+    }
+    return handle;
+}
 
 // Which names are matching files, and how many of each kind a draw may take,
-// both arrive from C# as the `limits` argument on every draw: the object
-// JsFolderAccess writes from FolderPickLimits.MaxFileCounts, members in the
-// table's order, e.g. { '.xg': 500, '.xgp': 2000 }.
-// The module deliberately keeps NO copy of either fact — a second list here is a
-// second thing to update when the caps or the kinds change.
+// arrive from C# as `limits` on every draw — the object JsFolderAccess writes
+// from FolderPickLimits.MaxFileCounts, in the table's order. The module keeps
+// no copy of either fact. The keys are disjoint suffixes (FolderPickLimits
+// validates that), so the first match is the only match.
 function matchingExtensionOf(name, limits) {
     const lower = name.toLowerCase();
-    // The extensions are disjoint suffixes — FolderPickLimits validates that no
-    // key is a suffix of another — so the first match is the only match.
     return Object.keys(limits).find(ext => lower.endsWith(ext)) ?? null;
 }
 
-// Per-extension admission against the caps table, in two phases: offer() is
-// handed every file the walk finds and keeps the matching ones, classified by
-// name against the table, then draw() chooses each kind's admitted subset and
-// reports, for EVERY kind of the table, how many files it found and how many
-// it admitted — a kind the folder held none of included, so
-// the report alone says whether any kind was cut short. The report reads in the
-// table's own order so a multi-line notice is deterministic. The cap itself is
-// not reported: it came from C# in the first place, and JsFolderAccess derives
-// it back from the table rather than trusting a round-tripped copy.
-//
-// THE SUBSET IS DRAWN UNIFORMLY AT RANDOM, not taken from the front. Admitting
-// the first limits[ext] files in enumeration order — what this did until
-// halheinrich/backgammon#106 — made a corpus-scale folder's excess PERMANENTLY
-// invisible: enumeration order is browser-supplied and stable, so every re-pick
-// of the same folder admitted the same prefix and the tail was unreachable by
-// any gesture the user could make. Drawing at random makes repeated draws of
-// one folder — re-picks or resamples — cover the whole corpus over time, which
-// is the honest price of a cost ceiling. This is the module's only behavior,
-// deliberately not a host knob: the caps table is host-owned NUMBERS, while
-// how a cap chooses its survivors is the library's enforcement — and no host
-// wants the rule whose excess is unreachable.
-//
-// COLLECT-THEN-DRAW, not reservoir sampling. A one-pass reservoir would hold
-// only limits[ext] entries, but there is nothing to buy with that here: the
-// FS-Access walk visits every entry either way and a held entry is one handle
-// reference (names are free — see drawPicked), and the fallback's candidates
-// are already all in hand. Two obvious phases beat one clever pass.
-//
-// ENCOUNTER ORDER SURVIVES THE DRAW. Admitted files come back in the order the
-// caller met them — across kinds, not grouped by kind — so a pick under every
-// cap is indistinguishable from one that never sampled, and an over-limit pick
-// still reads in folder order rather than in draw order.
-//
-// TRUNCATE, DON'T FAIL — and enforce it HERE. An over-limit folder used to lose
-// the whole pick to a throw on the C# side (JsFolderAccess counted the
-// enumerated metadata), including the files that were perfectly readable. The
-// caps are a cost ceiling, not an admissions test, so the pick takes what it
-// can and says what it left; downstream derives from the partial pool with no
-// special-casing at all. The count check lives in this module because it is
-// PER EXTENSION, and this is the only place a file's extension is known before
-// anything is transferred.
-//
-// Each kind is capped INDEPENDENTLY, because file count is only a cost proxy
-// within one kind (the host's table encodes its own per-kind cost model). A
-// mixed folder can therefore admit its full quota of every kind, and one kind
-// being sampled down leaves the others untouched.
+// Per-extension admission in two phases: offer() keeps every matching item the
+// walk finds, classified by name; draw() chooses each kind's admitted subset
+// UNIFORMLY AT RANDOM and reports, for every kind of the table in the table's
+// order, how many it found and how many it admitted. Random, not the first N:
+// enumeration order is browser-supplied and stable, so a prefix rule put a
+// corpus-scale folder's excess permanently out of reach of every re-pick
+// (halheinrich/backgammon#106). Collect-then-draw rather than a reservoir,
+// because a per-entry decision cannot be a uniform sample before it knows how
+// many candidates are still coming. Admitted files keep encounter order across
+// kinds, so a pick under every cap reads as one that never sampled. Count caps
+// truncate and report; they never fail the pick.
 function createCountSampler(limits) {
-    const matching = [];          // every matching item, in encounter order
-    const positions = new Map();  // extension -> that kind's indices into `matching`
+    const matching = [];
+    const positions = new Map();
     return {
         offer(name, item) {
             const extension = matchingExtensionOf(name, limits);
@@ -121,13 +88,8 @@ function createCountSampler(limits) {
     };
 }
 
-// Choose `count` of `indices` uniformly at random — all of them, untouched,
-// when there are no more than `count`, which is what leaves an under-limit kind
-// byte-identical to a pick that never sampled. Over the cap it is a partial
-// Fisher-Yates shuffle over a copy: each of the first `count` slots draws from
-// whatever is left, so every subset of that size is equally likely. The
-// returned order is the draw's, not the folder's — encounter order is
-// re-imposed by index in draw(), which is the only caller.
+// `count` of `indices` uniformly at random — all of them, untouched, when there
+// are no more than `count`; otherwise a partial Fisher-Yates over a copy.
 function sample(indices, count) {
     if (indices.length <= count) {
         return indices;
@@ -144,69 +106,27 @@ export function supportsDirectoryPicker() {
     return typeof window.showDirectoryPicker === 'function';
 }
 
-// FS-Access pick, PART ONE of two: native picker (read mode), then a readwrite
-// permission request on the picked handle. AbortError is the user dismissing
-// the picker — an expected outcome, returned as { status: 'cancelled' }.
+// File System Access pick, part one of two: the native picker (read mode), then
+// a readwrite permission request on the picked handle, then the landing. Split
+// from the draw so the caller gets control back exactly when the prompts end
+// (JsFolderAccess's onPickAccepted hook) and a busy affordance can be truthful.
 //
-// SPLIT FROM THE DRAW DELIBERATELY. Everything here is the browser asking the
-// *user* something; everything in drawPicked() is the app working. Fused, the
-// app could not tell the two apart, so it could not raise a busy affordance
-// that was true — a progress cursor would have been up while a modal picker
-// waited on the user, and absent during the scan that actually makes them
-// wait. Split, the caller gets control back at exactly the moment the prompts
-// end (JsFolderAccess.PickFolderAsync's onPickAccepted hook) and the
-// affordance means one thing on both mechanisms: the app is processing a
-// selection the user has made.
-//
-// The handle lands in the PICKED slot here, so from this line the new folder
-// is the held one — whatever the draw and the buffering that follow make of
-// it. A cancelled pick returns above and leaves the held folder as it was.
-//
-// Declining the readwrite request is NOT an abort: requestPermission resolves
-// 'denied', the picked handle stays READABLE, and the pick returns
-// writable:false — the PermissionDenied rung, where the file list still loads
-// and the host runs read-only.
-//
-// THE BROWSER REFUSING TO ASK LANDS ON THAT SAME RUNG, and getting there takes
-// the catch below. requestPermission REQUIRES transient user activation and
-// REJECTS when there is none — File System Access spec: "If global does not
-// have transient activation, then throw a SecurityError DOMException"; the
-// message Chromium puts on it is "User activation is required to request
-// permissions." showDirectoryPicker performs the activation notification steps
-// as it resolves, which is what leaves desktop Chrome with live activation on
-// the line below. On Chrome for Android it is not live by the time this runs,
-// so the request is refused on EVERY pick — deterministically, a second fresh
-// gesture included (halheinrich/backgammon#109, Galaxy Tab S10 FE).
-//
-// This was previously described here as an "auto-deny" that degraded on its
-// own. It does not auto-deny, it THROWS, and the throw was uncaught: it escaped
-// beginPick as a JSException and destroyed the entire pick — including the read
-// grant the user had ALREADY given, which is strictly worse than any degrade.
-// Catching it is what makes the documented graceful degrade actually exist. A
-// refusal to ask and a user's own "no" are deliberately not distinguished: both
-// mean "no write grant", the picked folder stays readable in both, and no
-// caller has a reason to act differently. Anything else the request throws is a
-// real browser failure and still fails the pick loudly.
-//
-// DON'T collapse this into one prompt. showDirectoryPicker({ mode: 'readwrite' })
-// looks like a free UX win — one prompt instead of two — and was tried and
-// reverted on 2026-07-24 (in BgQuiz, this module's origin). Observed in real
-// Chrome: declining that single readwrite prompt ABORTS THE WHOLE PICK. It
-// surfaces as AbortError, which this function maps to 'cancelled', so the app
-// returns to its initial no-folder state with no read handle at all. That
-// destroys the read-only PermissionDenied rung above — a deliberate, valued
-// degrade (decline write, keep reading). One fewer prompt is not worth
-// silently losing it, so the two-prompt flow is retained deliberately. (The
-// underlying concern — the second prompt being missed in a busy UI — is a
-// host-copy problem: progressive disclosure and in-page "check your browser"
-// guidance, not a prompt-collapse.)
+// Two prompts, deliberately. showDirectoryPicker({ mode: 'readwrite' }) was
+// tried and reverted 2026-07-24: declining that single prompt aborts the WHOLE
+// pick, which destroys the read-only PermissionDenied rung (decline write, keep
+// reading). Declining the readwrite request here resolves 'denied' and the
+// handle stays readable. The browser refusing to ask lands on that same rung:
+// requestPermission requires transient user activation and throws SecurityError
+// without it, which Chrome for Android does on every pick
+// (halheinrich/backgammon#109); uncaught, that throw destroyed the pick and the
+// read grant with it. Any other failure of the request still fails the pick.
 export async function beginPick() {
     let handle;
     try {
         handle = await window.showDirectoryPicker();
     } catch (e) {
         if (e instanceof DOMException && e.name === 'AbortError') {
-            return { status: 'cancelled', directoryName: '', writable: false };
+            return { status: 'cancelled', directoryName: '', writable: false, context: 0 };
         }
         throw e;
     }
@@ -215,64 +135,57 @@ export async function beginPick() {
     try {
         writable = await handle.requestPermission({ mode: 'readwrite' }) === 'granted';
     } catch (e) {
-        // SecurityError is the refuse-to-ask above (no transient activation, or
-        // a cross-origin frame) — read-only is the honest outcome for both.
         if (!(e instanceof DOMException && e.name === 'SecurityError')) {
             throw e;
         }
     }
 
-    pickedHandle = handle;
-    pickedCandidates = null;  // the handle is walked afresh by every draw
-    return { status: 'ok', directoryName: handle.name, writable };
+    return { status: 'ok', directoryName: handle.name, writable, context: land(handle, null) };
 }
 
-// The draw: the app's own work, and the ONE implementation behind both pick
-// mechanisms and every resample. JsFolderAccess calls it right after beginPick
-// (behind the busy hook), right after collectFallbackFiles, and alone for a
-// resample, with the same `limits` on every call — FolderPickLimits.MaxFileCounts
-// (see matchingExtensionOf). Returns { status: 'drawn', files, kinds }, or
-// { status: 'noFolder', ... } when nothing is held: an expected answer, which
-// JsFolderAccess turns into the caller error it documents.
-//
-// WHAT IT WALKS is the held folder, read and never written:
-//   File System Access — the directory handle, walked AFRESH, so a resample
-//     sees files added or removed since the pick. Top-level only: values()
-//     yields direct children and subdirectories are not descended into. A walk
-//     the browser refuses (the permission withdrawn, the folder gone) rejects,
-//     and the rejection propagates: nothing here asks for permission, so a
-//     draw never shows a prompt.
-//   Fallback — the candidates collectFallbackFiles retained: the folder as the
-//     browser handed it over, which a resample redraws without seeing any
-//     change made since.
-// Names keep their extension — the extension-bearing-name contract
-// (PickedFile.FileName).
-//
-// The walk classifies and collects by NAME ALONE, which costs nothing, and
-// getFile() runs afterwards over the DRAWN files only — so a folder holding ten
-// thousand files still pays one stat per file the draw actually takes, not per
-// file it walks past. That property is why the draw sits BETWEEN the two loops
-// instead of inside the first one: a per-entry decision made on the way past
-// cannot be a uniform sample, because it does not yet know how many candidates
-// are still coming. (The fallback's Files carry their size already.)
-//
-// NOTHING IS RECORDED. The reply carries names and sizes; readFileData finds
-// each name in the held folder again when C# buffers it. So a draw that fails,
-// or a buffering pass that fails after it, leaves the picked slot exactly as
-// it found it.
-export async function drawPicked(limits) {
+// Fallback gesture: open the hidden webkitdirectory input's native picker. The
+// pick arrives through the input's change event (collectFallbackFiles); a
+// dismissal fires nothing.
+export function clickElement(element) {
+    element.click();
+}
+
+// Fallback collection: land the folder the browser handed over and answer its
+// name and context. The browser hands over the whole tree; only top-level files
+// are kept — webkitRelativePath is "folder/file.ext" for direct children (one
+// separator) — every one of them, whatever its kind, since which names match is
+// decided by each draw against the table it is handed. The input is reset so
+// the same folder can be picked again: a change event fires only when the
+// selection differs. An empty FileList lands an empty folder.
+export function collectFallbackFiles(inputElement) {
+    const all = Array.from(inputElement.files ?? []);
+    const topLevel = all.filter(f => (f.webkitRelativePath.match(/\//g) ?? []).length === 1);
+    const directoryName = all.length > 0 ? all[0].webkitRelativePath.split('/')[0] : '';
+    const context = land(null, new Map(topLevel.map(f => [f.name, f])));
+    inputElement.value = '';
+    return { directoryName, context };
+}
+
+// The draw: the one implementation behind a pick's sample and every resample.
+// A File System Access folder is walked afresh (top level only), so a resample
+// sees files added or removed since the pick; a walk the browser refuses
+// rejects, and nothing here asks for permission. A fallback folder's candidates
+// are redrawn as collected. The walk classifies by NAME alone and getFile()
+// runs only over the drawn files, so a ten-thousand-file folder pays one stat
+// per file the draw takes — which is why the draw sits between the two loops.
+// The reply carries names and sizes; nothing is recorded.
+export async function draw(context, limits) {
+    const { handle, candidates } = contextOf(context);
     const sampler = createCountSampler(limits);
     let sizeOf;
-    if (pickedHandle !== null) {
-        for await (const entry of pickedHandle.values()) {
+    if (handle !== null) {
+        for await (const entry of handle.values()) {
             if (entry.kind === 'file') sampler.offer(entry.name, entry);
         }
         sizeOf = async entry => (await entry.getFile()).size;
-    } else if (pickedCandidates !== null) {
-        for (const file of pickedCandidates.values()) sampler.offer(file.name, file);
-        sizeOf = file => file.size;
     } else {
-        return { status: 'noFolder', files: [], kinds: [] };
+        for (const file of candidates.values()) sampler.offer(file.name, file);
+        sizeOf = file => file.size;
     }
 
     const { admitted, kinds } = sampler.draw();
@@ -280,80 +193,34 @@ export async function drawPicked(limits) {
     for (const entry of admitted) {
         files.push({ name: entry.name, size: await sizeOf(entry) });
     }
-    return { status: 'drawn', files, kinds };
+    return { files, kinds };
 }
 
-// Fallback gesture: open the hidden webkitdirectory input's native picker.
-// The eventual pick arrives via the input's own change event (collected with
-// collectFallbackFiles); a dismissal fires nothing.
-export function clickElement(element) {
-    element.click();
-}
-
-// Fallback collection: bind the folder the browser handed over as the held
-// one, and return its name; drawPicked then draws from it. The browser hands
-// over the folder's whole tree; only top-level files are kept —
-// webkitRelativePath is "folder/file.ext" for direct children (exactly one
-// separator). Blazor's InputFile can't see webkitRelativePath, which is why
-// this module reads the FileList itself.
-//
-// THE CANDIDATES ARE RETAINED, because this mechanism cannot walk the folder
-// again: there is no handle, only this one FileList. Every top-level file is
-// kept, whatever its kind — which names match is decided by each draw against
-// the table it is handed, so nothing kept here encodes the caps table. What is
-// kept is the browser's own File objects, never their bytes: nothing here
-// reads them, and a file's bytes are read only when readFileData asks for a
-// drawn one. An empty FileList binds an empty folder.
-export function collectFallbackFiles(inputElement) {
-    const all = Array.from(inputElement.files ?? []);
-    const topLevel = all.filter(f => (f.webkitRelativePath.match(/\//g) ?? []).length === 1);
-    const directoryName = all.length > 0 ? all[0].webkitRelativePath.split('/')[0] : '';
-
-    pickedHandle = null;  // no writable handle on this mechanism
-    pickedCandidates = new Map(topLevel.map(f => [f.name, f]));
-    // Allow the same folder to be re-picked later: a change event only fires
-    // when the selection differs, so reset the input now that it's collected.
-    inputElement.value = '';
-    return directoryName;
-}
-
-// Byte read of a file of the held folder, by the name a draw returned: the
-// buffering pass JsFolderAccess runs after every draw. Returns the raw
-// ArrayBuffer — the .NET side receives it as IJSStreamReference and enforces
-// its own size cap when opening the stream.
-//
-// Resolved against the held folder at read time, not against a record of the
-// draw (there is none — see drawPicked): the handle's own lookup on File System
-// Access, the retained candidates on the fallback. A file gone since the draw
-// rejects here, which fails the buffering pass as a whole on the C# side.
-export async function readFileData(name) {
+// Byte read of one drawn file, by the name the draw returned, resolved against
+// the folder at read time: the handle's own lookup, or the retained candidate.
+// A file gone since the draw rejects, which fails the buffering pass as a whole
+// on the C# side. The .NET side receives the ArrayBuffer as IJSStreamReference.
+export async function readFileData(context, name) {
+    const { handle, candidates } = contextOf(context);
     let file;
-    if (pickedHandle !== null) {
-        file = await (await pickedHandle.getFileHandle(name)).getFile();
-    } else if (pickedCandidates !== null) {
-        file = pickedCandidates.get(name);
+    if (handle !== null) {
+        file = await (await handle.getFileHandle(name)).getFile();
+    } else {
+        file = candidates.get(name);
         if (file === undefined) {
             throw new Error(`No picked file named '${name}'.`);
         }
-    } else {
-        throw new Error('No picked folder to read from.');
     }
     return await file.arrayBuffer();
 }
 
-// Text read of a named file from the PICKED slot — the setup-time document
-// surface, read on the folder being configured before any promotion binds the
-// active slot. null = the file doesn't exist yet (an expected absence, not an
-// error), mirroring readActiveFile's missing-file contract. Anything else
-// unexpected throws. Distinct from readFileData (which returns a drawn file's
-// bytes as an ArrayBuffer); this is small UTF-8 text returned as text.
-export async function readPickedFile(fileName) {
-    if (pickedHandle === null) {
-        throw new Error('No picked folder to read from.');
-    }
+// Text read of a named file; null when it does not exist yet, which is an
+// expected absence and not an error.
+export async function readFile(context, fileName) {
+    const handle = handleOf(context);
     let fileHandle;
     try {
-        fileHandle = await pickedHandle.getFileHandle(fileName);
+        fileHandle = await handle.getFileHandle(fileName);
     } catch (e) {
         if (e instanceof DOMException && e.name === 'NotFoundError') {
             return null;
@@ -364,68 +231,36 @@ export async function readPickedFile(fileName) {
     return await file.text();
 }
 
-// Text write of a named file into the PICKED slot, replacing any existing
-// content. Deliberately on the picked slot, never the active one: setup-time
-// documents belong to the folder the user is configuring, isolated from
-// whatever a running session records through the active slot.
-export async function writePickedFile(fileName, text) {
-    if (pickedHandle === null) {
-        throw new Error('No picked folder to write to.');
-    }
-    const fileHandle = await pickedHandle.getFileHandle(fileName, { create: true });
+// Text write of a named file, replacing any existing content.
+export async function writeFile(context, fileName, text) {
+    const fileHandle = await handleOf(context).getFileHandle(fileName, { create: true });
     const stream = await fileHandle.createWritable();
     await stream.write(text);
     await stream.close();
 }
 
-// The createWritable() rejections that mean "this file cannot be written" —
-// the probe's only list of them. Measured in Chrome 153 on Windows
-// (halheinrich/backgammon#261, Step 0, 2026-09-22): a file with the read-only
-// attribute rejects with NoModificationAllowedError. NotAllowedError is
-// permission absent — the backstop behind the queryPermission pre-check in
-// probePickedFileWritability, for a grant revoked between the two calls.
-// Anything not listed propagates.
+// The createWritable() rejections that mean "this file cannot be written", and
+// the probe's only list of them: a read-only file rejects with
+// NoModificationAllowedError (measured in Chrome 153, halheinrich/backgammon#261);
+// NotAllowedError is permission absent, the backstop behind the pre-check
+// below for a grant revoked between the two calls. Anything else propagates.
 const NOT_WRITABLE_REJECTIONS = ['NoModificationAllowedError', 'NotAllowedError'];
 
-// Writability probe of a named file in the PICKED slot — setup time, beside
-// readPickedFile/writePickedFile, so a host learns at the pick what it would
-// otherwise learn at its first real write. Returns 'absent' | 'writable' |
-// 'notWritable'; JsFolderAccess maps the strings, and the DOMException names
-// are interpreted here and nowhere else.
-//
-// ABSENT IS NOT WRITABLE. A missing file answers 'absent' and nothing is
-// created (never { create: true }): there is nothing to probe, and whether the
-// file COULD be created is the folder's write grant, which the caller already
-// has from the pick.
-//
-// THE PROBE NEVER PROMPTS. createWritable() on a handle whose write permission
-// is still 'prompt' shows the Edit-files prompt when the call carries user
-// activation — a host probing from a click handler would get a prompt instead
-// of an answer. The queryPermission pre-check answers 'notWritable' for
-// anything but 'granted' before createWritable() is ever reached, which is
-// what makes it safe to probe without checking the pick's capability first.
-// (The same pre-check at pick time would skip beginPick's doomed write request
-// on an already-granted folder — halheinrich/backgammon#110, a separate
-// change.)
-//
-// ABORT, NEVER CLOSE. Chromium writes to a swap file until close(); abort()
-// discards it and leaves the original byte-identical (measured,
-// halheinrich/backgammon#261). A close() here would replace the file with the
-// empty stream.
-//
-// THE LIMIT: plain createWritable() does not open the original, so a file
-// another program holds open answers 'writable' and fails only at the host's
-// first real write. { keepExistingData: true } does catch that file — it
-// copies the original — but on the locked file it left a .crswap behind
-// (halheinrich/backgammon#261), and a probe that leaves a file in the folder
-// is a write. Not used.
-export async function probePickedFileWritability(fileName) {
-    if (pickedHandle === null) {
-        throw new Error('No picked folder to probe.');
-    }
+// Writability probe of a named file: 'absent' | 'writable' | 'notWritable'.
+// Absent creates nothing — whether a file COULD be created is the folder's
+// write grant, which the caller has from the pick. The queryPermission
+// pre-check is what keeps the probe from prompting: createWritable() on a
+// handle whose permission is still 'prompt' shows the Edit-files prompt when
+// the call carries user activation. ABORT, NEVER CLOSE: Chromium writes to a
+// swap file until close(), and abort() leaves the original byte-identical; a
+// close() would replace the file with the empty stream. A file another
+// program holds open answers 'writable' and fails at the first real write —
+// { keepExistingData: true } would catch it but left a .crswap behind.
+export async function probeFileWritability(context, fileName) {
+    const handle = handleOf(context);
     let fileHandle;
     try {
-        fileHandle = await pickedHandle.getFileHandle(fileName);
+        fileHandle = await handle.getFileHandle(fileName);
     } catch (e) {
         if (e instanceof DOMException && e.name === 'NotFoundError') {
             return 'absent';
@@ -448,48 +283,8 @@ export async function probePickedFileWritability(fileName) {
     return 'writable';
 }
 
-// Begin-work bind: promote the picked slot's handle to the active slot.
-// False = no FS-Access handle picked (fallback pick, cleared, or never
-// picked) — the caller's no-write signal.
-export function promoteToActive() {
-    activeHandle = pickedHandle;
-    return activeHandle !== null;
-}
-
-// Text read of a named file via the ACTIVE slot. null = the file doesn't exist
-// yet (a fresh folder — not an error). Anything else unexpected throws.
-export async function readActiveFile(fileName) {
-    if (activeHandle === null) {
-        throw new Error('No active folder to read from.');
-    }
-    let fileHandle;
-    try {
-        fileHandle = await activeHandle.getFileHandle(fileName);
-    } catch (e) {
-        if (e instanceof DOMException && e.name === 'NotFoundError') {
-            return null;
-        }
-        throw e;
-    }
-    const file = await fileHandle.getFile();
-    return await file.text();
-}
-
-// Text write of a named file via the ACTIVE slot, replacing any existing content.
-export async function writeActiveFile(fileName, text) {
-    if (activeHandle === null) {
-        throw new Error('No active folder to write to.');
-    }
-    const fileHandle = await activeHandle.getFileHandle(fileName, { create: true });
-    const stream = await fileHandle.createWritable();
-    await stream.write(text);
-    await stream.close();
-}
-
-// Clear affordance: release the held folder — the PICKED slot only, the
-// fallback's retained candidates with it. The active slot persists so work
-// bound to it keeps recording until the next promotion re-binds it.
-export function clearPicked() {
-    pickedHandle = null;
-    pickedCandidates = null;
+// Release a landed folder: its handle, or its retained candidates. Releasing
+// an id that is not held does nothing.
+export function release(context) {
+    contexts.delete(context);
 }

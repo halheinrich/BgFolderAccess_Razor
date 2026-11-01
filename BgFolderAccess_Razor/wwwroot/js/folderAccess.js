@@ -144,8 +144,9 @@ export async function beginPick() {
 }
 
 // Fallback gesture: open the hidden webkitdirectory input's native picker. The
-// pick arrives through the input's change event (collectFallbackFiles); a
-// dismissal fires nothing.
+// pick arrives through the input's change event (collectFallbackFiles). A
+// dismissal fires no change, so this module never sees it; a host that reports
+// one handles the input's cancel event.
 export function clickElement(element) {
     element.click();
 }

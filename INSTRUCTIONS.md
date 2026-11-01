@@ -3,6 +3,7 @@
 > Collaboration contract: [`../AGENTS.md`](../AGENTS.md)
 > Umbrella status & dependency graph: [`../INSTRUCTIONS.md`](../INSTRUCTIONS.md)
 > Mission & principles: [`../VISION.md`](../VISION.md)
+> Open work: the [tracker](https://github.com/halheinrich/backgammon/issues), label `BgFolderAccess_Razor`.
 
 ## What it is
 
@@ -10,12 +11,37 @@ A Blazor WebAssembly host's folder machinery: pick a local folder, buffer its
 top-level matching files, and read, write and resample that folder for as
 long as the host holds it — across both browser mechanisms, degrading
 gracefully. C# / .NET 10 Razor class library with no components: the Razor
-SDK exists so `folderAccess.js` ships as a static web asset. Solution
-`D:\Users\Hal\Documents\Visual Studio 2026\Projects\backgammon\BgFolderAccess_Razor\BgFolderAccess_Razor.slnx`;
-repo https://github.com/halheinrich/BgFolderAccess_Razor, branch `main`.
-Standalone, with no reference either way to XgFilter_Razor; a host that uses
-both bridges them with an adapter. Its one consumer is `BgQuiz_Blazor.Client`.
-The public surface carries XML docs; this file says what the docs cannot.
+SDK exists so `folderAccess.js` ships as a static web asset. Standalone, with
+no reference either way to XgFilter_Razor; a host that uses both bridges them
+with an adapter. Its one consumer is `BgQuiz_Blazor.Client`. The XML docs are
+the API reference; this file covers the design, the pitfalls and how to run it.
+
+## Build and test
+
+From this directory; the solution holds the library and its test project, and
+warnings are errors (`Directory.Build.props`).
+
+```bash
+dotnet build BgFolderAccess_Razor.slnx
+```
+
+```bash
+dotnet test BgFolderAccess_Razor.slnx
+```
+
+The tests run both halves with no browser and no fixture. No CI runs them: the
+umbrella's one workflow, `bgquiz.yml`, runs BgQuiz's own suites.
+
+Jint is an engine, not a browser, so this suite proves the module's logic and
+nothing of its interop. BgQuiz's e2e suite runs the module in a real Chromium:
+the File System Access path through a fake `window.showDirectoryPicker`
+(`FsAccessFakeTestBase`) serving a committed fixture's bytes and scripted
+outcomes such as a denied permission, and the `webkitdirectory` fallback with
+real files set through Playwright's file chooser. That establishes the `File`
+transfer, the module's handling of the rejections the fake raises, the
+fallback's collection and the page's behaviour while a draw runs. No automated
+test drives the native directory picker or its permission dialogs; those are
+proved only by hand in a real browser.
 
 ## Layout
 
@@ -28,15 +54,15 @@ The public surface carries XML docs; this file says what the docs cannot.
 - **Values** — `FolderPickOutcome` (the context and the pick's draw),
   `FolderSample` (files and the per-kind report), `PickedFile`,
   `SampledKind`, `FolderWriteCapability`, `FileWritability`,
-  `FolderPickLimits` (the host's caps, validated), `PickedFileTooLargeException`.
+  `FolderPickLimits` (the host's caps, validated; its `MaxFileCountFor` has no
+  production caller, halheinrich/backgammon#409), `PickedFileTooLargeException`.
 - **The module** — `wwwroot/js/folderAccess.js`: both picks, the one draw,
   the context table. `BgFolderAccessJsonContext` reads its structured replies.
 - **Tests** — the C# half pins the values, the caps validation and the two
   seam types' mapping over bUnit's scripted module; the JS half
   (`FolderAccessModuleHost` over `js/moduleHarness.js`) runs the shipped
-  module in Jint: the draw's invariants, resample, and the context table. Jint
-  is an engine, not a browser: real pickers, prompts, `DOMException` mapping
-  and `File` transfer are proved only by BgQuiz's e2e suite.
+  module in Jint: the draw's invariants, resample, and the context table.
+  [Build and test](#build-and-test) says what neither half proves.
 
 ## How it works
 
@@ -61,14 +87,16 @@ The public surface carries XML docs; this file says what the docs cannot.
   cap derived from the enforced table, never off the wire); an over-limit
   kind's survivors are drawn uniformly at random (halheinrich/backgammon#106).
   The byte cap fails the whole draw with `PickedFileTooLargeException`, at the
-  draw's metadata and again at the length the bytes arrive at.
+  draw's metadata and again at the length the bytes arrive at. The table's
+  keys must be suffix-disjoint, which the constructor enforces, because the
+  module's classifier takes the first suffix match.
 - **Errors.** Expected outcomes are values: cancelled, `PermissionDenied`, a
   `null` read, `FileWritability.NotWritable`. Unexpected browser failures are
   `JSException`; a released context is `ObjectDisposedException`;
   `PickedFileTooLargeException` derives from `Exception`, so a host reporting
   it never swallows its own bugs.
 
-## DI wiring
+## Wiring a host
 
 ```csharp
 builder.Services.AddSingleton(new FolderPickLimits(
@@ -77,25 +105,36 @@ builder.Services.AddSingleton(new FolderPickLimits(
 builder.Services.AddScoped<IFolderAccess, JsFolderAccess>();        // one per tab
 ```
 
+Each gesture asks `SupportsDirectoryPickerAsync`, then either calls
+`PickFolderAsync` with its busy hook, or calls `TriggerFallbackPickerAsync` on
+a hidden `<input type="file" webkitdirectory>` the host renders, whose `change`
+handler calls `CollectFallbackAsync`. The library never sees that input
+dismissed; a host that reports it handles the input's `cancel` event. The host
+disposes each `IFolderContext` it stops holding. BgQuiz's `Home.razor` and
+`QuizApp` are the worked example.
+
 ## Pitfalls
 
 - **Two prompts, never `showDirectoryPicker({ mode: 'readwrite' })`.**
-  Declining the single readwrite prompt aborts the whole pick (tried and
-  reverted 2026-07-24), which destroys the read-only `PermissionDenied` rung.
+  Declining the single readwrite prompt aborts the whole pick, which destroys
+  the read-only `PermissionDenied` rung (tried in real Chrome and reverted
+  2026-07-24; the record is BgQuiz_Blazor a496b2f, from before this library
+  was hoisted out of it).
 - **Cancelled and `PermissionDenied` are cause-ambiguous.** A dismissed
-  picker and a declined view-files grant both surface as `AbortError`; a
-  declined write and a browser that refused to ask (`SecurityError`, Chrome
-  for Android, halheinrich/backgammon#109) share a rung. Host copy never says
-  the user declined.
+  picker and a declined view-files grant both surface as `AbortError`
+  (BgQuiz_Blazor 1a6e7f4); a declined write and a browser that refused to ask
+  (`SecurityError`, Chrome for Android, halheinrich/backgammon#109) share a
+  rung. Host copy never says the user declined.
 - **The busy hook has one truthful raise point**, between the prompts and the
   draw; a resample has no prompt and so no hook.
 - **Directory handles never cross interop**; C# addresses them by context id.
 - **Count caps truncate, the byte cap throws; don't unify them.** Keep the
-  stream-length check before `OpenReadStreamAsync`, and don't translate an
+  stream-length check before `OpenReadStreamAsync`, so a file that grew since
+  the draw surfaces as the cap's exception, and don't translate an
   `ArgumentOutOfRangeException`: other failures wear that type. A zero-byte
-  matching file fails the draw that way (the runtime refuses a non-positive
-  stream length) and is surfaced untranslated; whether it should buffer as
-  empty bytes is an open question.
+  matching file is one, by the runtime's source (it refuses a non-positive
+  stream length; not yet run in a browser): it fails the draw, untranslated.
+  What it should do instead is booked as halheinrich/backgammon#410.
 - **Dispose every `IJSStreamReference`**, not only its stream: the runtime
   roots the buffer until the reference is disposed, a whole sample per draw.
 - **The draw sits between the walk and the stats.** Classify by name, draw,
@@ -103,23 +142,23 @@ builder.Services.AddScoped<IFolderAccess, JsFolderAccess>();        // one per t
   uniform draw and re-fusing the loops restores the first-N bug.
 - **Don't narrow the fallback's candidates** to the draw or to the table's
   matches: the excess would be out of every resample's reach.
-- **Only `RepeatedPicks_ReachEveryFileOfAnOverLimitKind` (and its resample
-  twin) tells random from first-N**; its failure odds are about 1e-10. A
+- **Only `RepeatedPicks_ReachEveryFileOfAnOverLimitKind` and its twin
+  `RepeatedResamples_ReachEveryFileOfAnOverLimitKind` tell random from
+  first-N**; each states its failure odds and the arithmetic behind them. A
   "two picks differ" assertion really is flaky.
 - **No library type crosses interop as `InvokeAsync<T>`'s type argument**
   (halheinrich/backgammon#197): the annotation keeps `T`, not the records
   nested in it. Replies come back as `JsonElement` and are read through the
-  context; the posture test pins every DTO's reachability.
+  context; `BgFolderAccessRazorTrimPostureTests` pins every DTO's reachability.
 - **The probe aborts its stream and never closes it** (a `close()` would
   replace the file with the empty stream); the `queryPermission` pre-check is
-  what keeps it from prompting; `keepExistingData` leaves a `.crswap` behind.
-  `Absent` is not `Writable`, and a file another program holds open answers
-  `Writable`.
+  what keeps it from prompting. `Absent` is not `Writable`. A file another
+  program holds open answers `Writable`, and `{ keepExistingData: true }`
+  stays out though it caught that file, because it left a `.crswap` behind
+  (both measured in Chrome 153, 1b6c269, halheinrich/backgammon#261).
 - **Nothing public hands out a writable collection**
   (halheinrich/backgammon#273): `ImmutableArray` members, `OpenRead()` over a
   shared array with no public buffer; `ImmutableExposureAssert` pins it.
-- **Suffix-disjoint extension keys are a constructed fact**: the classifier
-  takes the first suffix match.
 - **The fallback input is reset after collection** (a `change` event fires
   only when the selection differs); an empty FileList lands a folder with
   zero files, not a cancellation.

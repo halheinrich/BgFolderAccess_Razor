@@ -5,8 +5,8 @@ namespace BgFolderAccess_Razor;
 
 /// <summary>
 /// One picked matching file, fully buffered into memory. The bytes are read
-/// out of the browser once, at pick time, and never leave it — this is the
-/// in-memory payload the host processes locally.
+/// out of the browser once, by the draw that admitted the file, and never leave
+/// it — this is the in-memory payload the host processes locally.
 ///
 /// <para>
 /// <b>Immutable, bytes included</b> (halheinrich/backgammon#273). The contents

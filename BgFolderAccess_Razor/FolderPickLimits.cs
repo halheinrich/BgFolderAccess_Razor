@@ -15,7 +15,7 @@ namespace BgFolderAccess_Razor;
 /// <i>enforces</i> the count caps against the pick's metadata before any bytes
 /// cross the interop boundary (the whole <see cref="MaxFileCounts"/> table is
 /// handed to it on every enumeration, so the module holds no copy of its own),
-/// <see cref="JsFolderAccess"/> enforces the byte cap and derives each reported
+/// <see cref="JsFolderContext"/> enforces the byte cap and derives each reported
 /// kind's cap figure (<see cref="SampledKind.MaxFileCount"/>) from this
 /// instance, and host pages document and report them. The megabyte figure is <b>derived</b> from
 /// <see cref="MaxFileBytes"/>, never restated: raising the byte cap moves every
@@ -155,7 +155,7 @@ public sealed class FolderPickLimits
 
     /// <summary>
     /// Per-file size cap in bytes. Enforced on every pick and resample by
-    /// <see cref="JsFolderAccess"/>, at two points with one outcome: checked
+    /// <see cref="JsFolderContext"/>, at two points with one outcome: checked
     /// against each drawn file's metadata up front, and against the length its
     /// bytes are handed over at, before the stream opens. An oversized file
     /// fails the whole pick or resample with a

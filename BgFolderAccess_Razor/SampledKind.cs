@@ -84,7 +84,7 @@ public sealed record SampledKind
     /// <summary>
     /// The cap the draw enforced on this kind. <b>Derived, never
     /// round-tripped</b>: it is not on the wire. The library's one
-    /// construction site, <see cref="JsFolderAccess"/>'s report mapping, takes
+    /// construction site, <see cref="JsFolderContext"/>'s report mapping, takes
     /// it from the same <see cref="FolderPickLimits"/> instance whose table it
     /// handed the module, so the figure a notice states is by construction the
     /// figure the draw enforced.

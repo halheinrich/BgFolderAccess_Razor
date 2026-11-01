@@ -3,12 +3,13 @@ namespace BgFolderAccess_Razor;
 /// <summary>
 /// A file a draw took is larger than the host's per-file byte cap
 /// (<see cref="FolderPickLimits.MaxFileBytes"/>), so the pick or resample that
-/// drew it failed whole: no sample is returned, and nothing held changes (see
-/// <see cref="IFolderAccess"/>'s remarks on the held folder).
+/// drew it failed whole: no sample is returned. A failed pick has released its
+/// folder; a failed resample leaves the folder held (see
+/// <see cref="IFolderContext.ResampleAsync"/>).
 ///
 /// <para>
 /// <b>One exception for one condition, at both places the cap is enforced.</b>
-/// <see cref="JsFolderAccess"/> checks every drawn file's size before any byte
+/// <see cref="JsFolderContext"/> checks every drawn file's size before any byte
 /// moves, and checks each file again by the length its bytes are handed over
 /// at, which is larger only if the file grew after the draw. Either way the
 /// condition is the same and so is the exception; <see cref="FileSize"/> is
@@ -17,9 +18,9 @@ namespace BgFolderAccess_Razor;
 ///
 /// <para>
 /// <b>Not an <see cref="InvalidOperationException"/>, deliberately.</b> That
-/// type is what <see cref="IFolderContext.ResampleAsync"/> (and a pick whose
-/// folder was released part-way) throws for "no folder is held" — a caller
-/// bug. A file over the cap is a property of the folder the user chose,
+/// family is a caller bug's: a released context throws
+/// <see cref="ObjectDisposedException"/>, which derives from it. A file over
+/// the cap is a property of the folder the user chose,
 /// something a host reports, so a host catching this one must not catch its
 /// own bug with it. It derives from <see cref="Exception"/> directly: it is
 /// not an I/O failure either, so no narrower base would be honest.

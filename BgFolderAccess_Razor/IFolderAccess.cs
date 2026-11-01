@@ -7,8 +7,8 @@ using Microsoft.AspNetCore.Components;
 /// <c>folderAccess.js</c> module. A pick that lands a folder answers it as an
 /// <see cref="IFolderContext"/>, through which the host reads, writes, resamples and finally
 /// releases that folder; this interface itself holds nothing between calls. Only
-/// <see cref="JsFolderAccess"/> touches JS interop, and the browser's directory handles never
-/// cross the boundary.
+/// <see cref="JsFolderAccess"/> and the contexts it lands touch JS interop, and the browser's
+/// directory handles never cross the boundary.
 ///
 /// <para>
 /// Expected outcomes are values, never exceptions: a pick that ended with no folder is
@@ -46,7 +46,9 @@ public interface IFolderAccess
     /// <summary>
     /// Open the hidden <c>webkitdirectory</c> input's native picker, the fallback gesture for
     /// browsers without File System Access. The pick arrives through the input's own
-    /// <c>change</c> event, handled with <see cref="CollectFallbackAsync"/>; a dismissal fires nothing.
+    /// <c>change</c> event, handled with <see cref="CollectFallbackAsync"/>. A dismissal fires
+    /// no <c>change</c>, so the library never sees it; a host that reports one handles the
+    /// input's <c>cancel</c> event.
     /// </summary>
     Task TriggerFallbackPickerAsync(ElementReference fallbackInput);
 
